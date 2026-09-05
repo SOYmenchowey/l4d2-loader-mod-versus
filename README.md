@@ -20,36 +20,18 @@ Elige los mods que quieres utilizar en tu partida de Versus, actívalos y pulsa 
 
 ## Requisitos
 
-### Para usuarios
-
-* Windows
-* Left 4 Dead 2 instalado mediante Steam
-* Permisos de administrador cuando el juego esté instalado en `Program Files`
-
-**No necesitas instalar Python ni ejecutar comandos para utilizar la versión `.exe`.**
-
-### Para desarrolladores
-
-Si quieres ejecutar el proyecto desde el código fuente:
-
 * Windows
 * Python 3.10+
 * Left 4 Dead 2 instalado mediante Steam
 
-## Descargar
+## Instalación
 
-Descarga la última versión del ejecutable desde la sección **Releases**.
-
-El programa se distribuye como un ejecutable standalone, por lo que el usuario final no necesita instalar Python ni Flet.
-
-## Cómo ejecutar desde el código fuente
+Clona el repositorio:
 
 ```bash
-pip install -r requirements.txt
-python main.py
+git clone https://github.com/SOYmenchowey/l4d2-loader-mod-versus.git
+cd l4d2-loader-mod-versus
 ```
-
-## Cómo empaquetarlo como `.exe` standalone
 
 Instala las dependencias:
 
@@ -57,17 +39,24 @@ Instala las dependencias:
 pip install -r requirements.txt
 ```
 
-Después ejecuta:
+## Cómo ejecutar
+
+Ejecuta:
 
 ```bash
+python main.py
+```
+
+## Cómo empaquetarlo como `.exe`
+
+Si quieres generar un ejecutable standalone:
+
+```bash
+pip install pyinstaller
 pyinstaller --clean "L4D2 Mod Loader.spec"
 ```
 
-El ejecutable se generará en:
-
-```text
-dist/
-```
+El ejecutable generado aparecerá en la carpeta `dist/`.
 
 ## Notas
 
