@@ -1,65 +1,81 @@
-# L4D2 Versus Mod Manager
+# L4D2 Mod Loader — Versus
 
-Gestor gráfico para **habilitar y deshabilitar addons del Steam Workshop** en
-**Left 4 Dead 2**, centrado especialmente en el modo **Versus**. Convierte la
-tarea de activar mods en algo visual: marca, activa y juega.
+Herramienta para gestionar addons de **Left 4 Dead 2** sin tener que modificar Steam ni utilizar la consola.
 
-##:V: mods en Versus
-
-El núcleo del proyecto es activar/desactivar addons **sin tocar Steam ni la
-consola**: elige qué mods quieres llevar a tu partida de Versus, actívalos y
-pulsa **JUGAR**.
+Elige los mods que quieres utilizar en tu partida de Versus, actívalos y pulsa **JUGAR**.
 
 ## Características
 
-- 📦 **Explora tus addons del Workshop**: títulos, descripciones e imágenes de
-  preview descargadas desde la API pública de Steam (con caché en disco).
-- ✅ **Activa/desactiva mods**: inyecta las rutas en `gameinfo.txt` (sección
-  `SearchPaths`) copiando el VPK a `mods/<id>/pak01_dir.vpk`. Mantiene intactos
-  los mods ya activos (activación acumulativa).
-- 🏷️ **Detección MOD / VSCRIPT**: analiza el árbol del VPK (formato Source
-  VPK v1) para saber si un addon es un mod normal o un script.
-- 🗂️ **Categorías automáticas**: Skins / Armas / Sonido / UI / Otro, más filtro
-  dedicado para VScripts.
-- ⭐ **Favoritos y presets**: guarda combinaciones de addons activos.
-- 🔗 **Dependencias**: sugiere y resuelve requisitos entre addons (transitivo,
-  con protección de ciclos).
-- 👁️ **Visión de infectado**: quita/restaura el tinte naranja-azul de los
-  infectados.
-- 🧹 **Limpieza**: borra addons huérfanos o desuscritos y restaura el
-  `gameinfo.txt` original (con backups automáticos).
-- 🔍 **Watcher automático**: detecta cuando Steam descarga/elimina VPKs y
-  refresca la lista sin reiniciar.
-- 🛡️ **Guard de juego abierto**: bloquea cambios si Left 4 Dead 2 está
-  corriendo.
+* 📦 **Explora tus addons del Workshop**: títulos, descripciones e imágenes de preview descargadas desde la API pública de Steam, con caché en disco.
+* ✅ **Activa/desactiva mods**: gestiona las rutas en `gameinfo.txt` mediante la sección `SearchPaths`, copiando los VPK a `mods/<id>/pak01_dir.vpk`.
+* 🔄 **Activación acumulativa**: mantiene intactos los mods que ya estaban activos al agregar nuevos addons.
+* 🏷️ **Detección MOD / VSCRIPT**: analiza el árbol del VPK (formato Source VPK v1) para identificar si un addon es un mod normal o un script.
+* 🗂️ **Categorías automáticas**: Skins / Armas / Sonido / UI / Otro, además de un filtro dedicado para VScripts.
+* ⭐ **Favoritos y presets**: guarda combinaciones de addons activos para reutilizarlas rápidamente.
+* 🔗 **Dependencias**: detecta y sugiere requisitos entre addons, incluyendo dependencias transitivas y protección contra ciclos.
+* 👁️ **Visión de infectado**: permite quitar o restaurar el tinte naranja/azul de los infectados.
+* 🧹 **Limpieza**: elimina addons huérfanos o desuscritos y permite restaurar el `gameinfo.txt` original mediante backups automáticos.
+* 🔍 **Watcher automático**: detecta cuando Steam descarga o elimina VPKs y actualiza la lista sin reiniciar la aplicación.
+* 🛡️ **Guard de juego abierto**: bloquea modificaciones mientras Left 4 Dead 2 está ejecutándose.
 
 ## Requisitos
 
-- Windows
-- Python 3.10+
-- Left 4 Dead 2 instalado vía Steam
+### Para usuarios
 
-## Cómo ejecutar
+* Windows
+* Left 4 Dead 2 instalado mediante Steam
+* Permisos de administrador cuando el juego esté instalado en `Program Files`
+
+**No necesitas instalar Python ni ejecutar comandos para utilizar la versión `.exe`.**
+
+### Para desarrolladores
+
+Si quieres ejecutar el proyecto desde el código fuente:
+
+* Windows
+* Python 3.10+
+* Left 4 Dead 2 instalado mediante Steam
+
+## Descargar
+
+Descarga la última versión del ejecutable desde la sección **Releases**.
+
+El programa se distribuye como un ejecutable standalone, por lo que el usuario final no necesita instalar Python ni Flet.
+
+## Cómo ejecutar desde el código fuente
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
 
-## Cómo empaquetarlo como .exe standalone
+## Cómo empaquetarlo como `.exe` standalone
+
+Instala las dependencias:
 
 ```bash
 pip install -r requirements.txt
+```
+
+Después ejecuta:
+
+```bash
 pyinstaller --clean "L4D2 Mod Loader.spec"
 ```
 
-El ejecutable queda en `dist/`.
+El ejecutable se generará en:
+
+```text
+dist/
+```
 
 ## Notas
 
-- Si el juego está en `Program Files`, ejecuta la app **como administrador**
-  para poder escribir en `gameinfo.txt`.
-- Los addons Vscripts pueden no funcionar con este método de activación.
+* Si Left 4 Dead 2 está instalado dentro de `Program Files`, ejecuta la aplicación **como administrador** para permitir modificaciones en `gameinfo.txt`.
+* El programa crea backups automáticos antes de modificar `gameinfo.txt`.
+* Los addons de tipo VSCRIPT pueden no funcionar correctamente mediante este método de activación.
+* La información e imágenes de los addons del Workshop pueden requerir conexión a Internet cuando todavía no están disponibles en la caché local.
+* El programa bloquea las modificaciones mientras Left 4 Dead 2 está abierto para evitar conflictos con los archivos del juego.
 
 ## Créditos
 
