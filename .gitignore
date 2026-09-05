@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.spec
+.venv*/
+*.egg-info/
+flet-windows.zip
+pyinstaller_build.log
