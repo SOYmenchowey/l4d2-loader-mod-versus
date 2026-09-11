@@ -2,8 +2,12 @@ __pycache__/
 *.py[cod]
 dist/
 build/
-*.spec
 .venv*/
 *.egg-info/
+.flet/
+.env
+.env.*
+*.log
 flet-windows.zip
 pyinstaller_build.log
+PLAN.txt

@@ -14,7 +14,8 @@ Elige los mods que quieres utilizar en tu partida de Versus, actívalos y pulsa 
 * ⭐ **Favoritos y presets**: guarda combinaciones de addons activos para reutilizarlas rápidamente.
 * 🔗 **Dependencias**: detecta y sugiere requisitos entre addons, incluyendo dependencias transitivas y protección contra ciclos.
 * 👁️ **Visión de infectado**: permite quitar o restaurar el tinte naranja/azul de los infectados.
-* 🧹 **Limpieza**: elimina addons huérfanos o desuscritos y permite restaurar el `gameinfo.txt` original mediante backups automáticos.
+* 🧹 **Limpieza automática**: al desuscribirse de un addon, retira su copia administrada cuando L4D2 se cierra y permite restaurar el `gameinfo.txt` original mediante backups automáticos.
+* ↩️ **Restauración completa**: devuelve `gameinfo.txt`, la visión de infectado y las copias de mods al estado anterior al loader, conservando archivos y ediciones externas.
 * 🔍 **Watcher automático**: detecta cuando Steam descarga o elimina VPKs y actualiza la lista sin reiniciar la aplicación.
 * 🛡️ **Guard de juego abierto**: bloquea modificaciones mientras Left 4 Dead 2 está ejecutándose.
 
@@ -53,7 +54,7 @@ Si quieres generar un ejecutable standalone:
 
 ```bash
 pip install pyinstaller
-pyinstaller --clean "L4D2 Mod Loader.spec"
+pyinstaller --clean "L4D2_Mod_Loader.spec"
 ```
 
 El ejecutable generado aparecerá en la carpeta `dist/`.

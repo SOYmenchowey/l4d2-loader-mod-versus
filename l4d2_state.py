@@ -1,0 +1,37 @@
+import l4d2_core as core
+
+
+def create_initial_state(cfg_path):
+    return {
+        "l4d2": None,
+        "addons": [],
+        "rows": {},
+        "selected_ids": set(),
+        "preview_id": None,
+        "hover_preview_id": None,
+        "category": "Todos",
+        "query": "",
+        "view": "mods",
+        "active_ids": set(),
+        "deps": core.load_deps(),
+        "favs": set(core.load_json(cfg_path("favs.json"), []) or []),
+        "presets": core.load_json(cfg_path("presets.json"), {}) or {},
+        "last_config": core.load_json(cfg_path("last_config.json"), {}) or {},
+        "sort_recent": False,
+        "_fresh_scan": False,
+        "_disk_ids": set(),
+        "_pending_rescan": False,
+        "_pending_cleanup_ids": set(),
+        "_l4d2_was_running": False,
+        "_closing": False,
+        "_load_generation": 0,
+        "_row_cache": {},
+        "_render_signature": None,
+        "_tasks": set(),
+        "_search_task": None,
+        "_search_generation": 0,
+        "_resize_task": None,
+        "_watch_task": None,
+        "_load_progress": None,
+        "fetching": False,
+    }

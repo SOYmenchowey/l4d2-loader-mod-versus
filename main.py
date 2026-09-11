@@ -2,96 +2,62 @@ import asyncio
 import glob
 import json
 import os
-import random
-import sys
-import threading
 import time
-import unicodedata
 
 import flet as ft
 
 import l4d2_core as core
-
-BG = "#0C0C10"
-SURFACE = "#16161C"
-SURFACE_2 = "#1E1E26"
-BORDER = "#2A2A33"
-TEXT = "#F2F2F5"
-TEXT_DIM = "#8B8B96"
-ACCENT = "#4ADE80"
-ACCENT_SOFT = "#1B3A2A"
-DANGER = "#F87171"
-AMBER = "#F59E0B"
-AMBER_SOFT = "#2E2416"
-VSCRIPT_BG = "#3A3A46"
-VSCRIPT_TEXT = "#D6D6DC"
-PREVIEW_GRAD = ft.RadialGradient(
-    center=ft.Alignment(0, 0), radius=1.0,
-    colors=["#23232E", "#101016"],
+import l4d2_diagnostics as diagnostics
+import l4d2_state
+import l4d2_ui as ui
+from l4d2_clipboard import copy_text_to_clipboard
+from l4d2_controls import (
+    ModRow,
+    dialog_row,
+    fit_image,
+    make_pane,
+    pane_clear,
+    pane_set_img,
 )
-PARTICLE_COLORS = ["#4ADE80", "#A7F3D0", "#E2E8F0", "#FBBF24"]
-
-
-class ParticleField:
-    def __init__(self, page_ctx, width, height, count=12):
-        self.alive = True
-        self.page = page_ctx
-        self.controls = []
-        rnd = random.Random()
-        self.stack = ft.Stack([], width=width, height=height)
-        for _ in range(count):
-            size = rnd.randint(3, 8)
-            c = ft.Container(
-                width=size, height=size,
-                border_radius=size // 2 + 1,
-                bgcolor=rnd.choice(PARTICLE_COLORS),
-                opacity=rnd.uniform(0.12, 0.4),
-                left=rnd.uniform(0, max(1, width - size)),
-                top=rnd.uniform(0, max(1, height - size)),
-                animate_position=ft.Animation(rnd.randint(4000, 10000), "linear"),
-                animate_opacity=ft.Animation(2000, "easeInOut"),
-            )
-            self.controls.append(c)
-            self.stack.controls.append(c)
-        self.thread = threading.Thread(target=self._loop, daemon=True)
-        self.thread.start()
-
-    def _loop(self):
-        rnd = random.Random()
-        while self.alive:
-            time.sleep(4.5)
-            if not self.alive:
-                break
-            try:
-                for c in self.controls:
-                    w = float(c.width or 4)
-                    c.left = rnd.uniform(0, max(1, self.stack.width - w))
-                    c.top = rnd.uniform(0, max(1, self.stack.height - w))
-                    c.opacity = rnd.uniform(0.1, 0.5)
-                if hasattr(self.page, "schedule_update"):
-                    self.page.schedule_update()
-                else:
-                    self.page.update()
-            except Exception:
-                pass
-
-    def stop(self):
-        self.alive = False
-
-CATEGORIES = ["Todos", "Favoritos", "Skins", "Armas", "Sonido", "UI",
-              "VScripts", "Otro"]
-
-STAR_ICON = "\u2605"
-STAR_OUTLINE = "\u2606"
-
-
-def _unaccent(s):
-    s = unicodedata.normalize("NFD", s or "")
-    return "".join(c for c in s if unicodedata.category(c) != "Mn").lower()
+from l4d2_dialogs import (
+    confirm_dialog_content,
+    count_badge,
+    dialog_shell,
+    modal_header,
+    enable_dialog_content,
+    progress_dialog_content,
+)
+from l4d2_theme import (
+    ACCENT,
+    ACCENT_SOFT,
+    AMBER,
+    AMBER_SOFT,
+    BG,
+    BORDER,
+    CATEGORIES,
+    CHECK_MARK,
+    CROSS_MARK,
+    DANGER,
+    DANGER_SOFT,
+    ICONO,
+    L4D2_BACKGROUND,
+    SURFACE,
+    SURFACE_2,
+    TEXT,
+    TEXT_DIM,
+    TIKTOK_URL,
+    WARN_MARK,
+)
 
 
 def _quant(n, singular, plural):
     return "%d %s" % (n, singular if n == 1 else plural)
+
+
+DEFAULT_WINDOW_WIDTH = 1152
+DEFAULT_WINDOW_HEIGHT = 944
+MIN_WINDOW_WIDTH = 1040
+MIN_WINDOW_HEIGHT = 760
 
 
 def _cfg_path(name):
@@ -101,44 +67,6 @@ def _cfg_path(name):
     except Exception:
         pass
     return os.path.join(d, name)
-
-CHECK_MARK = "\u2713"
-CROSS_MARK = "\u2715"
-WARN_MARK = "\u26A0"
-
-
-def _asset_path(name):
-    dirs = [os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
-            else None]
-    dirs.append(getattr(sys, "_MEIPASS", None))
-    dirs.append(os.path.dirname(os.path.abspath(__file__)))
-    for d in dirs:
-        if d:
-            cand = os.path.join(d, name)
-            if os.path.isfile(cand):
-                return cand
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
-
-
-ICONO = _asset_path("icono.png")
-
-RAINBOW = ["#F87171", "#FBBF24", "#FDE047", "#4ADE80", "#38BDF8",
-           "#A78BFA", "#F472B6"]
-
-
-
-TIKTOK_URL = "https://www.tiktok.com/@tokyossz"
-
-
-def rgb_spans(text, offset=0):
-    return [ft.TextSpan(ch,
-                        ft.TextStyle(color=RAINBOW[(i + offset) % len(RAINBOW)],
-                                     italic=True))
-            for i, ch in enumerate(text)]
-
-
-def rgb_text(text, size=11):
-    return ft.Text(spans=rgb_spans(text, 0), size=size)
 
 
 def debug_log(msg):
@@ -158,316 +86,58 @@ def dbg(msg):
         pass
 
 
-def _fit_image(path, w, h):
-    try:
-        return ft.Image(src=path, fit=ft.BoxFit.CONTAIN, border_radius=10,
-                        width=w, height=h,
-                        fade_in_animation=ft.Animation(300, "easeOut"))
-    except TypeError:
-        try:
-            return ft.Image(src=path, fit=ft.BoxFit.CONTAIN, border_radius=10,
-                            expand=True,
-                            fade_in_animation=ft.Animation(300, "easeOut"))
-        except TypeError:
-            return ft.Image(src=path, fit=ft.BoxFit.CONTAIN, border_radius=10,
-                            expand=True)
-
-
-def make_type_badge(a_type):
-    is_v = a_type == "VSCRIPT"
-    return ft.Container(
-        content=ft.Text(a_type, size=9, weight=ft.FontWeight.W_700,
-                        color=BG if is_v else VSCRIPT_TEXT),
-        bgcolor=AMBER if is_v else VSCRIPT_BG,
-        padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-        border_radius=4,
-    )
-
-
-class ModRow(ft.Container):
-    def __init__(self, addon, on_select, on_toggle, active,
-                 with_checkbox, dim, fav=False, on_fav=None, on_leave=None):
-        self.addon = addon
-        self.on_select = on_select
-        self.on_leave = on_leave
-        self.checkbox = None
-        parts = []
-        if with_checkbox:
-            self.checkbox = ft.Checkbox(
-                value=False,
-                active_color=ACCENT,
-                disabled=active,
-                on_change=lambda e: on_toggle(addon, e.control.value),
-            )
-            parts.append(self.checkbox)
-
-        title = ft.Text(addon.get("title") or addon["id"], size=14,
-                        weight=ft.FontWeight.W_500, color=TEXT,
-                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
-                        expand=True)
-        meta = ft.Text(
-            "%s  ·  %s  ·  %s" % (addon["id"], core.fmt_size(addon["size"]),
-                                  addon["category"]),
-            size=11, color=TEXT_DIM,
-            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
-
-        parts.append(ft.Column(
-            [
-                ft.Row([title, make_type_badge(addon["type"])], spacing=8),
-                meta,
-            ],
-            spacing=2, expand=True,
-        ))
-
-        if fav or on_fav:
-            parts.append(ft.Container(
-                content=ft.Text(STAR_ICON if fav else STAR_OUTLINE,
-                                size=14, color=AMBER if fav else TEXT_DIM),
-                padding=ft.Padding.symmetric(horizontal=6, vertical=4),
-                border_radius=6,
-                ink=True,
-                tooltip="Favorito",
-                on_click=lambda e: on_fav(addon) if on_fav else None,
-            ))
-
-        if active:
-            parts.append(ft.Container(
-                content=ft.Text("ACTIVADO", size=10,
-                                weight=ft.FontWeight.W_700, color=ACCENT),
-                bgcolor=ACCENT_SOFT,
-                padding=ft.Padding.symmetric(horizontal=8, vertical=4),
-                border_radius=6,
-            ))
-
-        self._target_opacity = 0.55 if dim else 1.0
-        super().__init__(
-            content=ft.Row(parts, spacing=10,
-                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.Padding.symmetric(horizontal=12, vertical=9),
-            border_radius=10,
-            bgcolor=SURFACE,
-            opacity=self._target_opacity,
-            animate_opacity=ft.Animation(200, "easeOut"),
-            animate_scale=ft.Animation(220, "easeOut"),
-            on_click=lambda e: self.on_select(self.addon),
-            on_hover=self._on_hover,
-            ink=True,
-        )
-
-    def _on_hover(self, e):
-        data = e.data if hasattr(e, "data") else None
-        if str(data).lower() in ("true", "1"):
-            self.on_select(self.addon)
-        elif self.on_leave:
-            self.on_leave(self.addon)
-
-    def set_selected(self, is_selected):
-        self.bgcolor = SURFACE_2 if is_selected else SURFACE
-        self.border = ft.Border.all(1, ACCENT) if is_selected else None
-
-
-def dialog_row(addon, with_checkbox=False, value=False, check_cb=None,
-               on_hover=None, on_leave=None, status=None, extra_meta=None):
-    def _hover(e):
-        data = e.data if hasattr(e, "data") else None
-        if str(data).lower() in ("true", "1"):
-            if on_hover:
-                on_hover(addon)
-        elif on_leave:
-            on_leave(addon)
-
-    box = None
-    if with_checkbox:
-        box = ft.Checkbox(value=value, active_color=ACCENT,
-                          on_change=lambda e: check_cb(addon, e.control.value))
-
-    title = ft.Text(addon.get("title") or addon["id"], size=14,
-                    weight=ft.FontWeight.W_500, color=TEXT,
-                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True)
-    meta_controls = [
-        ft.Text("%s  ·  %s" % (addon["id"], core.fmt_size(addon["size"])),
-                size=11, color=TEXT_DIM),
-    ]
-    if extra_meta:
-        meta_controls.append(ft.Text(extra_meta, size=11, color=AMBER,
-                                     max_lines=1,
-                                     overflow=ft.TextOverflow.ELLIPSIS))
-    v = addon["is_vscript"]
-    if status is None:
-        status = "NO COMPATIBLE" if v else "Listo"
-    status_text = ft.Text(status, size=10, weight=ft.FontWeight.W_700,
-                          color=AMBER if v else TEXT_DIM)
-
-    parts = []
-    if box:
-        parts.append(box)
-    parts.append(ft.Column(
-        [
-            ft.Row([title, make_type_badge(addon["type"])], spacing=8),
-            meta_controls[0],
-            *(meta_controls[1:] or []),
-        ],
-        spacing=2, expand=True,
-    ))
-    parts.append(status_text)
-
-    row = ft.Container(
-        content=ft.Row(parts, spacing=10,
-                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        padding=ft.Padding.symmetric(horizontal=10, vertical=8),
-        bgcolor=SURFACE,
-        border_radius=8,
-        on_click=lambda e: (on_hover(addon) if on_hover else None),
-        on_hover=_hover,
-    )
-    return row, box
-
-
-def make_pane(image_height, width, page_ctx, desc_lines=6,
-              placeholder="Pase el cursor sobre un addon"):
-    field = ParticleField(page_ctx, width, image_height)
-    layer = ft.Container(
-        content=ft.Text(placeholder, size=12, color=TEXT_DIM,
-                        text_align=ft.TextAlign.CENTER),
-        width=width, height=image_height,
-        alignment=ft.Alignment.CENTER,
-        animate_opacity=ft.Animation(250, "easeOut"),
-        animate_offset=ft.Animation(300, "easeOut"),
-    )
-    inner = ft.Container(
-        content=ft.Stack([field.stack, layer]),
-        width=width, height=image_height,
-        gradient=PREVIEW_GRAD, border_radius=10,
-        alignment=ft.Alignment.CENTER,
-    )
-    ring = ft.Container(
-        content=inner,
-        padding=2,
-        border=ft.Border.all(2, "#F5F5F7"),
-        border_radius=16,
-    )
-    img = ring
-    return {
-        "img": img,
-        "img_layer": layer,
-        "field": field,
-        "title": ft.Text("", size=13, weight=ft.FontWeight.W_600, color=TEXT,
-                         max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-        "meta": ft.Text("", size=10, color=TEXT_DIM),
-        "desc": (ft.Text("", size=13, color=TEXT_DIM, max_lines=desc_lines,
-                         overflow=ft.TextOverflow.ELLIPSIS) if desc_lines
-                 else None),
-        "current_id": None,
-        "height": image_height,
-        "width": width,
-    }
-
-
-def pane_set_img(pane, path, loading=False):
-    if path:
-        pane["img_layer"].content = _fit_image(path, pane["width"],
-                                               pane["height"] - 2)
-    else:
-        pane["img_layer"].content = ft.Text(
-            "Cargando preview..." if loading else "Sin preview disponible",
-            size=12, color=TEXT_DIM, text_align=ft.TextAlign.CENTER)
-
-
-def pane_clear(pane, placeholder="Pase el cursor sobre un addon"):
-    pane["current_id"] = None
-    pane["title"].value = ""
-    pane["meta"].value = ""
-    if pane["desc"]:
-        pane["desc"].value = ""
-    pane["img_layer"].blur = ft.Blur(0, 0)
-    pane["img_layer"].opacity = 1.0
-    pane["img_layer"].content = ft.Text(
-        placeholder, size=12, color=TEXT_DIM, text_align=ft.TextAlign.CENTER)
-
-
 def main(page: ft.Page):
     page.title = "L4D2 Mod Loader"
     page.bgcolor = BG
     page.padding = 0
     try:
-        page.window.width = 1120
-        page.window.height = 700
-        page.window.min_width = 1120
-        page.window.min_height = 700
-        page.window.max_width = 1120
-        page.window.max_height = 700
-        page.window.resizable = False
-        page.window.maximizable = False
-        try:
-            import ctypes
-            _sw = ctypes.windll.user32.GetSystemMetrics(0)
-            _sh = ctypes.windll.user32.GetSystemMetrics(1)
-            if _sw and _sh:
-                page.window.left = (_sw - 1120) // 2
-                page.window.top = (_sh - 700) // 2
-        except Exception:
-            pass
-        if os.path.isfile(ICONO):
-            page.window.icon = ICONO
+        if not page.web:
+            page.window.width = DEFAULT_WINDOW_WIDTH
+            page.window.height = DEFAULT_WINDOW_HEIGHT
+            page.window.min_width = MIN_WINDOW_WIDTH
+            page.window.min_height = MIN_WINDOW_HEIGHT
+            page.window.resizable = True
+            page.window.maximizable = True
+            try:
+                import ctypes
+                _sw = ctypes.windll.user32.GetSystemMetrics(0)
+                _sh = ctypes.windll.user32.GetSystemMetrics(1)
+                if _sw and _sh:
+                    page.window.left = (_sw - DEFAULT_WINDOW_WIDTH) // 2
+                    page.window.top = (_sh - DEFAULT_WINDOW_HEIGHT) // 2
+            except Exception:
+                pass
+            if os.path.isfile(ICONO):
+                page.window.icon = ICONO
     except Exception:
         pass
     page.fonts = {}
     page.theme = ft.Theme(font_family="Segoe UI")
 
-    state = {
-        "l4d2": None,
-        "addons": [],
-        "rows": {},
-        "selected_ids": set(),
-        "preview_id": None,
-        "category": "Todos",
-        "query": "",
-        "view": "mods",
-        "active_ids": set(),
-        "deps": core.load_deps(),
-        "favs": set(core.load_json(_cfg_path("favs.json"), []) or []),
-        "presets": core.load_json(_cfg_path("presets.json"), {}) or {},
-        "sort_recent": False,
-        "_fresh_scan": False,
-        "_disk_ids": set(),
-        "_pending_rescan": False,
-        "_l4d2_was_running": False,
-    }
+    state = l4d2_state.create_initial_state(_cfg_path)
+
+    def track_task(future):
+        state["_tasks"].add(future)
+        future.add_done_callback(lambda done: state["_tasks"].discard(done))
+        return future
 
     def ui_later(delay, fn):
         async def _t():
             await asyncio.sleep(delay)
+            if state["_closing"]:
+                return
             try:
                 fn()
             except Exception as ex:
                 dbg("ui_later ERR %r" % ex)
         try:
-            loop = getattr(getattr(getattr(page, "session", None),
-                                   "connection", None), "loop", None)
+            return track_task(page.run_task(_t))
         except Exception:
-            loop = None
-        ok = loop is not None
-        if ok:
-            try:
-                ok = bool(loop.is_running())
-            except Exception:
-                ok = False
-        if ok:
-            try:
-                page.run_task(_t)
-                return
-            except Exception:
-                pass
-        t = threading.Timer(delay, fn)
-        t.daemon = True
-        t.start()
+            return None
 
     def safe_update():
         try:
-            if hasattr(page, "schedule_update"):
-                page.schedule_update()
-            else:
-                page.update()
+            page.update()
         except Exception:
             pass
 
@@ -504,7 +174,6 @@ def main(page: ft.Page):
             dbg("dialog out ERR %r" % ex)
 
         def _c():
-            pane["field"].stop() if pane else None
             close_dlg()
             dbg("dialog closed")
 
@@ -527,6 +196,25 @@ def main(page: ft.Page):
                 d[a["id"]] = x
         return d
 
+    def save_last_config(reason):
+        if not state.get("l4d2"):
+            return False
+        try:
+            ids = sorted(core.currently_enabled(state["l4d2"]))
+        except Exception as ex:
+            dbg("last config read ERR %r" % ex)
+            ids = sorted(state.get("active_ids") or set())
+        state["last_config"] = {
+            "ids": ids,
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "reason": reason,
+        }
+        ok = core.save_json(_cfg_path("last_config.json"),
+                            state["last_config"])
+        if ok:
+            dbg("last config saved (%d ids): %s" % (len(ids), reason))
+        return ok
+
     def save_favs():
         core.save_json(_cfg_path("favs.json"), sorted(state["favs"]))
 
@@ -537,7 +225,6 @@ def main(page: ft.Page):
             state["favs"].add(addon["id"])
         save_favs()
         refresh_list()
-        page.update()
 
     def deps_sin_uso(removed_ids):
         keep = set(state["active_ids"]) - set(removed_ids)
@@ -678,10 +365,50 @@ def main(page: ft.Page):
                               bgcolor=TEXT_DIM)
     status_text = ft.Text("Buscando L4D2...", size=12, color=TEXT_DIM,
                           max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
-    counts_text = ft.Text("", size=11, color=TEXT_DIM)
-    view_title = ft.Text("Mods en VERSUS", size=18,
-                         weight=ft.FontWeight.BOLD, color=TEXT)
+    counts_text = ft.Text("", size=12, color="#D3D8E3",
+                          weight=ft.FontWeight.W_500)
+    view_title = ft.Text("Mods en Versus", size=29,
+                         weight=ft.FontWeight.W_800, color=TEXT)
     header_actions = ft.Container()
+    pending_cleanup_text = ft.Text("", size=11, color=AMBER, expand=True)
+    pending_cleanup_banner = ft.Container(
+        content=ft.Row(
+            [
+                ft.Icon(ft.Icons.SCHEDULE, color=AMBER, size=17),
+                pending_cleanup_text,
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        bgcolor=AMBER_SOFT,
+        border=ft.Border.all(1, AMBER),
+        border_radius=8,
+        padding=ft.Padding.symmetric(horizontal=12, vertical=9),
+        visible=False,
+    )
+
+    def set_pending_cleanup(ids, announce=False):
+        ids = set(ids)
+        previous = set(state["_pending_cleanup_ids"])
+        state["_pending_cleanup_ids"] = ids
+        pending_cleanup_banner.visible = bool(ids)
+        if ids:
+            count = len(ids)
+            pending_cleanup_text.value = (
+                "%s desuscrito%s pendiente%s de limpiar. "
+                "Se eliminará%s automáticamente al cerrar L4D2."
+                % (_quant(count, "addon", "addons"),
+                   "" if count == 1 else "s",
+                   "" if count == 1 else "s",
+                   "" if count == 1 else "n")
+            )
+            if announce and ids - previous:
+                notify(pending_cleanup_text.value, "warn")
+        try:
+            sidebar_holder.content = build_sidebar()
+        except Exception:
+            pass
+        safe_update()
 
     clear_box = ft.Container(
         content=ft.Icon(ft.Icons.CLOSE if hasattr(ft.Icons, "CLOSE")
@@ -689,49 +416,67 @@ def main(page: ft.Page):
         padding=4,
         visible=False,
         ink=True,
-        animate_scale=ft.Animation(400, "easeInOut"),
         on_click=lambda e: clear_search(),
         tooltip="Limpiar búsqueda",
     )
 
     search_field = ft.TextField(
-        hint_text="Filtrar por título o ID...",
+        hint_text="Buscar mods por título, ID o descripción...",
         border_color=BORDER, focused_border_color=ACCENT,
         color=TEXT, hint_style=ft.TextStyle(color=TEXT_DIM),
-        border_radius=8, height=42, content_padding=10,
+        bgcolor="#10131A",
+        border_radius=12, height=46, content_padding=12,
         prefix_icon=ft.Icons.SEARCH,
         suffix_icon=clear_box,
     )
 
-    _pulse = [False]
-
-    def _pulse_loop():
-        while True:
-            time.sleep(0.6)
-            _pulse[0] = not _pulse[0]
-
-            def _apply():
-                try:
-                    clear_box.scale = 1.18 if _pulse[0] else 1.0
-                    page.update()
-                except Exception:
-                    pass
-            ui_later(0.0, _apply)
-
-    t = threading.Thread(target=_pulse_loop, daemon=True)
-    t.start()
-
     def clear_search():
+        state["_search_generation"] += 1
+        pending = state.get("_search_task")
+        if pending:
+            pending.cancel()
         search_field.value = ""
         state["query"] = ""
         clear_box.visible = False
         refresh_list()
-        page.update()
 
     list_view = ft.ListView(spacing=6, expand=True,
                             padding=ft.Padding.only(right=4))
 
-    main_pane = make_pane(240, 248, page)
+    main_pane = make_pane(178, 244, page)
+    workshop_button_ref = [None]
+    folder_button_ref = [None]
+    copy_id_button_ref = [None]
+    detail_status_ref = [None]
+    detail_fav_ref = [None]
+    footer_left_text = ft.Text("Listo", size=12, color=ACCENT,
+                               weight=ft.FontWeight.W_600)
+    footer_selection_text = ft.Text("Sin selección", size=12, color=TEXT_DIM)
+
+    def load_preview(addon, pane):
+        url = addon.get("_preview_url")
+        if not url:
+            return
+        pane["generation"] = pane.get("generation", 0) + 1
+        generation = pane["generation"]
+        aid = addon["id"]
+
+        async def _load():
+            path = await asyncio.to_thread(core.get_cached_image, aid, url)
+            if (not ui.request_is_current(
+                    generation, pane.get("generation"), state["_closing"])
+                    or pane["current_id"] != aid):
+                return
+            current = get_addon(aid)
+            if current:
+                current["preview_local"] = path
+            pane_set_img(pane, path)
+            safe_update()
+
+        try:
+            track_task(page.run_task(_load))
+        except Exception as ex:
+            dbg("preview task ERR %r" % ex)
 
     def pane_set(pane, addon):
         pane["current_id"] = addon["id"]
@@ -746,13 +491,6 @@ def main(page: ft.Page):
         dbg("pane_set %s local=%s url=%s" % (
             addon["id"], bool(lp and os.path.isfile(lp)), bool(addon.get("_preview_url"))))
 
-        def _fade_in():
-            pane["img_layer"].opacity = 1.0
-            try:
-                page.update()
-            except Exception:
-                pass
-
         def _set_text(text):
             pane["img_layer"].blur = ft.Blur(0, 0)
             pane["img_layer"].opacity = 1.0
@@ -760,12 +498,6 @@ def main(page: ft.Page):
 
         def _show_image(path):
             pane_set_img(pane, path)
-            pane["img_layer"].opacity = 0.0
-            try:
-                page.update()
-            except Exception:
-                pass
-            ui_later(0.02, _fade_in)
 
         if lp and os.path.isfile(lp):
             _show_image(lp)
@@ -774,30 +506,49 @@ def main(page: ft.Page):
             if url:
                 pane_set_img(pane, None, loading=True)
                 _set_text(pane["img_layer"].content)
-
-                def bg():
-                    path = core.get_cached_image(addon["id"], url)
-                    addon["preview_local"] = path
-                    dbg("img_dl %s path=%s" % (addon["id"], path))
-
-                    def _apply():
-                        if pane["current_id"] == addon["id"]:
-                            _show_image(path)
-
-                    ui_later(0.0, _apply)
-
-                threading.Thread(target=bg, daemon=True).start()
+                load_preview(addon, pane)
             else:
                 msg = ("Descargando datos de Steam..." if state.get("fetching")
                        else "Sin preview disponible")
                 _set_text(ft.Text(msg, size=12, color=TEXT_DIM,
                                   text_align=ft.TextAlign.CENTER))
 
+    def displayed_preview_id():
+        hover_id = state.get("hover_preview_id")
+        if hover_id and get_addon(hover_id):
+            return hover_id
+        return state.get("preview_id")
+
+    def displayed_preview_addon():
+        addon_id = displayed_preview_id()
+        return get_addon(addon_id) if addon_id else None
+
+    def preview_hover(addon):
+        if not addon:
+            return
+        dbg("hover %s" % addon["id"])
+        state["hover_preview_id"] = addon["id"]
+        pane_set(main_pane, addon)
+        update_detail_actions()
+        safe_update()
+
+    def preview_leave(addon):
+        if not addon or state.get("hover_preview_id") != addon["id"]:
+            return
+        state["hover_preview_id"] = None
+        selected = get_addon(state["preview_id"]) if state["preview_id"] else None
+        if selected:
+            pane_set(main_pane, selected)
+        else:
+            pane_clear(main_pane)
+        update_detail_actions()
+        safe_update()
+
     def make_hover(pane):
         def hov(addon):
             dbg("hover %s" % addon["id"])
             pane_set(pane, addon)
-            page.update()
+            safe_update()
         return hov
 
     def make_leave(pane):
@@ -805,7 +556,7 @@ def main(page: ft.Page):
             if pane["current_id"] != addon["id"]:
                 return
             pane_clear(pane)
-            page.update()
+            safe_update()
         return leave
 
     def show_preview(addon_id, force=False):
@@ -814,6 +565,7 @@ def main(page: ft.Page):
             return
         old = state["preview_id"]
         state["preview_id"] = addon_id
+        state["hover_preview_id"] = None
         if old in state["rows"]:
             state["rows"][old].set_selected(False)
         if addon_id in state["rows"]:
@@ -822,24 +574,27 @@ def main(page: ft.Page):
         if not addon:
             return
         pane_set(main_pane, addon)
-        page.update()
+        update_detail_actions()
+        safe_update()
 
     def clear_preview(addon=None):
         if addon and state["preview_id"] != addon["id"]:
             return
         old = state["preview_id"]
         state["preview_id"] = None
+        state["hover_preview_id"] = None
         if old in state["rows"]:
             state["rows"][old].set_selected(False)
         pane_clear(main_pane)
-        page.update()
+        update_detail_actions()
+        safe_update()
 
     chip_controls = {}
 
     def chip_hover(e):
         on = str(getattr(e, "data", "")).lower() in ("true", "1")
         e.control.scale = 1.05 if on else 1.0
-        page.update()
+        e.control.update()
 
     CHIP_SEL_COLOR = {"Favoritos": AMBER}
 
@@ -864,28 +619,31 @@ def main(page: ft.Page):
         return chip
 
     chips_row = ft.Row([build_chip(c) for c in CATEGORIES], spacing=8,
-                       scroll=ft.ScrollMode.AUTO, expand=False)
+                       scroll=ft.ScrollMode.AUTO, expand=True)
 
     def sort_toggled(e=None):
         state["sort_recent"] = not state["sort_recent"]
-        sort_btn.text = ("Orden: Reciente primero" if state["sort_recent"]
-                         else "Orden: Antiguo primero")
-        refresh_list(stagger=True)
+        sort_btn.text = ("Reciente primero" if state["sort_recent"]
+                         else "Antiguo primero")
+        refresh_list()
 
-    sort_btn = ft.TextButton("Orden: Antiguo primero", on_click=sort_toggled,
-                             style=ft.ButtonStyle(color=TEXT_DIM,
+    sort_btn = ft.TextButton("Antiguo primero", on_click=sort_toggled,
+                             icon=ft.Icons.SORT,
+                             tooltip="Cambiar orden",
+                             style=ft.ButtonStyle(color=TEXT,
                                                   text_style=ft.TextStyle(size=12),
                                                   padding=ft.Padding.symmetric(
                                                       horizontal=8, vertical=6)))
 
     def clear_selection(e=None):
         state["selected_ids"].clear()
-        refresh_list()
-        page.update()
+        update_selection_controls()
+        safe_update()
         notify("Selección desmarcada.", "ok")
 
-    desmar_btn = ft.TextButton("DESMARCAR SELECCIONADOS",
+    desmar_btn = ft.TextButton("Desmarcar selección",
                                on_click=clear_selection,
+                               visible=False,
                                style=ft.ButtonStyle(color=ACCENT,
                                                     text_style=ft.TextStyle(size=12),
                                                     padding=ft.Padding.symmetric(
@@ -902,12 +660,13 @@ def main(page: ft.Page):
             c.content.color = BG if sel else TEXT_DIM
             c.content.weight = (ft.FontWeight.W_600 if sel
                                 else ft.FontWeight.NORMAL)
-        refresh_list(stagger=True)
-        page.update()
+        refresh_list()
 
-    def nav_item(text, view_name, selected, badge=0):
+    def nav_item(text, view_name, selected, badge=0, icon=None):
         content = ft.Row(
             [
+                ft.Icon(icon or ft.Icons.CIRCLE_OUTLINED, size=17,
+                        color=TEXT if selected else TEXT_DIM),
                 ft.Text(text, size=13,
                         color=TEXT if selected else TEXT_DIM,
                         weight=(ft.FontWeight.W_600 if selected
@@ -925,9 +684,10 @@ def main(page: ft.Page):
             ))
         return ft.Container(
             content=content,
-            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=11),
             border_radius=8,
             bgcolor=SURFACE_2 if selected else None,
+            border=(ft.Border.all(1, "#2F3A46") if selected else None),
             on_click=lambda e, v=view_name: switch_view(v),
             ink=True,
         )
@@ -957,7 +717,7 @@ def main(page: ft.Page):
         launch_external(TIKTOK_URL)
 
     def open_steam(e):
-        a = get_addon(state["preview_id"]) if state["preview_id"] else None
+        a = displayed_preview_addon()
         if not a:
             notify("Pase el cursor sobre un addon primero.", "warn")
             return
@@ -965,7 +725,7 @@ def main(page: ft.Page):
                         "filedetails/?id=%s" % a["id"])
 
     def open_folder(e):
-        a = get_addon(state["preview_id"]) if state["preview_id"] else None
+        a = displayed_preview_addon()
         if not a:
             notify("Pase el cursor sobre un addon primero.", "warn")
             return
@@ -974,31 +734,562 @@ def main(page: ft.Page):
         except Exception:
             notify("No se pudo abrir la carpeta.", "err")
 
+    def copy_addon_id(e):
+        a = displayed_preview_addon()
+        if not a:
+            notify("Pase el cursor sobre un addon primero.", "warn")
+            return
+        if copy_text_to_clipboard(page, a["id"], log=dbg):
+            notify("ID copiado al portapapeles.", "ok")
+        else:
+            notify("No se pudo copiar el ID.", "err")
+
+    def update_detail_actions():
+        addon = displayed_preview_addon()
+        if workshop_button_ref[0]:
+            workshop_button_ref[0].disabled = not bool(
+                addon and addon["id"].isdigit())
+        if folder_button_ref[0]:
+            folder_button_ref[0].disabled = not bool(
+                addon and os.path.isdir(os.path.dirname(addon["path"])))
+        if copy_id_button_ref[0]:
+            copy_id_button_ref[0].disabled = not bool(addon)
+        if detail_status_ref[0]:
+            is_active = bool(addon and addon["id"] in state["active_ids"])
+            detail_status_ref[0].content.controls[1].value = (
+                "Activo" if is_active else "Inactivo")
+            detail_status_ref[0].content.controls[0].color = (
+                ACCENT if is_active else TEXT_DIM)
+            detail_status_ref[0].bgcolor = ACCENT_SOFT if is_active else SURFACE_2
+            detail_status_ref[0].border = ft.Border.all(
+                1, ACCENT if is_active else BORDER)
+        if detail_fav_ref[0]:
+            is_fav = bool(addon and addon["id"] in state["favs"])
+            detail_fav_ref[0].content.value = "★" if is_fav else "☆"
+            detail_fav_ref[0].content.color = AMBER if is_fav else TEXT_DIM
+
     tiktok_footer = ft.Container(
-        content=rgb_text("made by @tokyossz", size=16),
+        content=ft.Text("made by @tokyossz", size=13, color=TEXT_DIM,
+                        italic=True),
         padding=ft.Padding.symmetric(horizontal=14, vertical=6),
         on_click=open_tiktok,
         tooltip=TIKTOK_URL,
         ink=True,
     )
-    _rgb_off = [0]
 
-    def _rgb_tick():
-        while True:
-            time.sleep(0.18)
-            _rgb_off[0] += 1
+    def collect_health_snapshot(refresh_running=False):
+        return diagnostics.collect_health_snapshot(
+            state, _cfg_path, refresh_running=refresh_running, log=dbg)
 
-            def _apply(o=_rgb_off[0]):
-                tiktok_footer.content.spans = rgb_spans("made by @tokyossz", o)
-                try:
-                    page.update()
-                except Exception:
-                    pass
+    def health_row(label, ok, warn_text=None):
+        color = ACCENT if ok else AMBER
+        value = "OK" if ok else (warn_text or "Revisar")
+        return ft.Row(
+            [
+                ft.Container(width=7, height=7, border_radius=4,
+                             bgcolor=color),
+                ft.Text(label, size=11, color=TEXT_DIM, expand=True,
+                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Text(value, size=10, color=color,
+                        weight=ft.FontWeight.W_700),
+            ],
+            spacing=7,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
 
-            ui_later(0.0, _apply)
+    def build_health_card():
+        snap = collect_health_snapshot()
+        warnings = ui.diagnostic_warnings(snap)
+        severe = (
+            not snap["game_found"] or snap["game_running"] or
+            (snap["game_found"] and not snap["gameinfo_writable"])
+        )
+        badge_color = DANGER if severe else (AMBER if warnings else ACCENT)
+        badge_text = "Revisar" if warnings else "Correcto"
 
-    t = threading.Thread(target=_rgb_tick, daemon=True)
-    t.start()
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Text("Salud", size=12, color=TEXT,
+                                    weight=ft.FontWeight.W_700),
+                            ft.Container(expand=True),
+                            ft.Container(
+                                content=ft.Text(
+                                    badge_text, size=9, color=badge_color,
+                                    weight=ft.FontWeight.W_700),
+                                bgcolor=(DANGER_SOFT if severe else
+                                         AMBER_SOFT if warnings else
+                                         ACCENT_SOFT),
+                                border=ft.Border.all(1, badge_color),
+                                border_radius=6,
+                                padding=ft.Padding.symmetric(
+                                    horizontal=6, vertical=2),
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    health_row("L4D2", snap["game_found"], "No"),
+                    health_row("Juego", not snap["game_running"], "Abierto"),
+                    health_row("gameinfo", snap["gameinfo_writable"], "Bloq."),
+                    health_row("Workshop", snap["workshop_exists"], "No"),
+                    health_row(
+                        "Limpieza",
+                        not snap["pending_cleanup_count"],
+                        str(snap["pending_cleanup_count"]),
+                    ),
+                ],
+                spacing=7,
+                tight=True,
+            ),
+            bgcolor="#121218",
+            border=ft.Border.all(1, BORDER),
+            border_radius=8,
+            padding=10,
+        )
+
+    def do_restore_last_config(e=None):
+        if not state["l4d2"]:
+            notify("No se encontró L4D2.", "warn")
+            return
+        if not require_game_closed():
+            return
+        config = state.get("last_config") or {}
+        ids = [str(value) for value in config.get("ids", [])]
+        if not ids:
+            notify("No hay una última configuración guardada todavía.", "warn")
+            return
+
+        installed = {addon["id"] for addon in state["addons"]}
+        summary = ui.last_config_summary(config, installed, state["active_ids"])
+        missing = [addon_id for addon_id in ids if addon_id not in installed]
+        target = [addon_id for addon_id in ids if addon_id in installed]
+        current = set(state["active_ids"])
+        to_disable = sorted(current - set(target))
+        to_enable = [get_addon(addon_id) for addon_id in target
+                     if addon_id not in current and get_addon(addon_id)]
+
+        def confirm_last():
+            if not require_game_closed():
+                return
+            if not to_disable and not to_enable:
+                close_dialog_anim(cnt)
+                notify("La última configuración ya está aplicada.", "ok")
+                return
+            save_last_config("Antes de volver a la última configuración")
+            ok_disable = True
+            ok_enable = True
+            if to_disable:
+                ok_disable = core.disable(state["l4d2"], to_disable,
+                                          log=debug_log)
+            if to_enable:
+                compat = [addon for addon in to_enable
+                          if not addon.get("is_vscript")]
+                if compat:
+                    ok_enable = core.enable(state["l4d2"], compat,
+                                            log=debug_log)
+            close_dialog_anim(cnt)
+            if ok_disable and ok_enable:
+                state["selected_ids"].clear()
+                refresh_list(sync_active=True)
+                msg = "Última configuración aplicada (%s)." % _quant(
+                    len(target), "addon", "addons")
+                if missing:
+                    msg += " %d ya no está(n) instalado(s)." % len(missing)
+                notify(msg, "ok")
+            else:
+                refresh_list(sync_active=True)
+                notify("No se pudo aplicar toda la última configuración.", "err")
+
+        items = [
+            "Se intentará volver a %s." % _quant(
+                summary["count"], "addon guardado", "addons guardados"),
+            "Se activarán %d y se quitarán %d según el estado actual." % (
+                len(to_enable), len(to_disable)),
+            "Guardada: %s" % (summary["saved_at"] or "sin fecha registrada"),
+        ]
+        if missing:
+            items.append("%d addon(s) ya no están instalados y se omitirán." %
+                         len(missing))
+        cnt = confirm_dialog_content(
+            ft.Icons.RESTORE,
+            "Volver a última configuración",
+            "Restaura la combinación activa anterior guardada automáticamente.",
+            items,
+            note=("No se borran VPKs de Workshop. Solo se ajustan entradas "
+                  "gestionadas por el loader."),
+            width=500,
+            color=ACCENT,
+        )
+        dlg = ft.AlertDialog(
+            content=cnt,
+            actions=[
+                ft.TextButton("Cancelar",
+                              on_click=lambda ev: close_dialog_anim(cnt)),
+                ft.FilledButton(
+                    "Aplicar última config",
+                    icon=ft.Icons.RESTORE,
+                    on_click=lambda ev: confirm_last(),
+                    style=ft.ButtonStyle(
+                        bgcolor=ACCENT, color=BG,
+                        shape=ft.RoundedRectangleBorder(radius=8))),
+            ],
+            modal=True,
+        )
+        show_dlg(dlg)
+        animate_display(cnt)
+
+    def open_diagnostic(e=None):
+        snap = collect_health_snapshot(refresh_running=True)
+        report = ui.format_diagnostic_report(snap)
+        warnings = ui.diagnostic_warnings(snap)
+
+        def copy_report(ev=None):
+            if copy_text_to_clipboard(page, report, log=dbg):
+                notify("Diagnóstico copiado al portapapeles.", "ok")
+            else:
+                notify("No se pudo copiar el diagnóstico.", "err")
+
+        def metric_card(icon, label, value, color=TEXT):
+            return ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Container(
+                            content=ft.Icon(icon, size=24, color=ACCENT),
+                            width=54,
+                            height=54,
+                            border_radius=12,
+                            bgcolor=ACCENT_SOFT,
+                            border=ft.Border.all(1, "#1E8B55"),
+                            alignment=ft.Alignment.CENTER,
+                        ),
+                        ft.Column(
+                            [
+                                ft.Text(label, size=13, color=TEXT_DIM,
+                                        max_lines=1,
+                                        overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Text(value, size=24, color=color,
+                                        weight=ft.FontWeight.W_800,
+                                        max_lines=1,
+                                        overflow=ft.TextOverflow.ELLIPSIS),
+                            ],
+                            spacing=4,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=14,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                expand=True,
+                height=86,
+                bgcolor="#111821",
+                border=ft.Border.all(1, "#263747"),
+                border_radius=10,
+                padding=14,
+            )
+
+        def detail_row(icon, label, value, ok=True):
+            color = ACCENT if ok else AMBER
+            return ft.Row(
+                [
+                    ft.Container(width=7, height=7,
+                                 border_radius=4, bgcolor=color),
+                    ft.Icon(icon, size=17, color=TEXT_DIM),
+                    ft.Text(label, size=13, color=TEXT_DIM, expand=True,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(value, size=13, color=TEXT,
+                            weight=ft.FontWeight.W_700,
+                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+
+        alert_color = AMBER if warnings else ACCENT
+        alert_title = ("Requiere atención" if warnings
+                       else "Todo se ve correcto")
+        alert_items = warnings[:3] if warnings else [
+            "No se detectaron alertas principales."
+        ]
+        if len(warnings) > 3:
+            alert_items.append("+ %d alerta(s) más en el reporte." %
+                               (len(warnings) - 3))
+        alert_icon = getattr(
+            ft.Icons, "WARNING_AMBER_ROUNDED",
+            getattr(ft.Icons, "WARNING", ft.Icons.INFO_OUTLINE))
+        ok_icon = ft.Icons.CHECK_CIRCLE_OUTLINE if not warnings else alert_icon
+        cnt = dialog_shell(
+            ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Container(
+                                content=ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=ft.Icon(
+                                                getattr(
+                                                    ft.Icons,
+                                                    "FACT_CHECK_OUTLINED",
+                                                    ft.Icons.INFO_OUTLINE),
+                                                size=30,
+                                                color=ACCENT),
+                                            width=62,
+                                            height=62,
+                                            border_radius=14,
+                                            bgcolor=ACCENT_SOFT,
+                                            border=ft.Border.all(1, ACCENT),
+                                            alignment=ft.Alignment.CENTER,
+                                        ),
+                                        ft.Column(
+                                            [
+                                                ft.Text("Diagnóstico", size=24,
+                                                        color=TEXT,
+                                                        weight=ft.FontWeight.W_800),
+                                                ft.Text(
+                                                    "Resumen listo para soporte o Discord.",
+                                                    size=14,
+                                                    color=TEXT_DIM),
+                                            ],
+                                            spacing=3,
+                                            expand=True,
+                                        ),
+                                    ],
+                                    spacing=16,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                expand=True,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CLOSE,
+                                icon_color=TEXT_DIM,
+                                tooltip="Cerrar",
+                                on_click=lambda ev: close_dialog_anim(cnt),
+                                style=ft.ButtonStyle(
+                                    bgcolor=SURFACE,
+                                    shape=ft.RoundedRectangleBorder(radius=10)),
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row(
+                        [
+                            metric_card(
+                                getattr(ft.Icons, "INVENTORY_2_OUTLINED",
+                                        ft.Icons.VIEW_MODULE),
+                                "Addons instalados",
+                                str(snap["addon_count"]),
+                                TEXT),
+                            metric_card(ft.Icons.PLAY_ARROW_OUTLINED,
+                                        "Activos",
+                                        str(snap["active_count"]),
+                                        ACCENT),
+                            metric_card(
+                                getattr(ft.Icons, "MONITOR_HEART_OUTLINED",
+                                        ft.Icons.INFO_OUTLINE),
+                                "Estado",
+                                "Revisar" if warnings else "Correcto",
+                                alert_color),
+                        ],
+                        spacing=14,
+                    ),
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Container(
+                                    content=ft.Icon(ok_icon, size=42,
+                                                    color=alert_color),
+                                    width=70,
+                                    height=70,
+                                    border_radius=36,
+                                    bgcolor=(AMBER_SOFT if warnings
+                                             else ACCENT_SOFT),
+                                    border=ft.Border.all(1, alert_color),
+                                    alignment=ft.Alignment.CENTER,
+                                ),
+                                ft.Column(
+                                    [
+                                        ft.Text(alert_title, size=13,
+                                                color=TEXT,
+                                                weight=ft.FontWeight.W_800),
+                                        *[
+                                            ft.Text(item, size=11,
+                                                    color=alert_color,
+                                                    max_lines=1,
+                                                    overflow=ft.TextOverflow.ELLIPSIS)
+                                            for item in alert_items
+                                        ],
+                                    ],
+                                    spacing=3,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
+                        ),
+                        bgcolor=AMBER_SOFT if warnings else ACCENT_SOFT,
+                        border=ft.Border.all(1, alert_color),
+                        border_radius=10,
+                        padding=18,
+                    ),
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Column(
+                                    [
+                                        detail_row(
+                                                   getattr(ft.Icons,
+                                                           "SPORTS_ESPORTS",
+                                                           ft.Icons.INFO_OUTLINE),
+                                                   "Juego",
+                                                   "Abierto" if snap["game_running"]
+                                                   else "Cerrado",
+                                                   not snap["game_running"]),
+                                        detail_row(
+                                                   getattr(ft.Icons, "STEAM",
+                                                           ft.Icons.LINK),
+                                                   "Workshop",
+                                                   "Detectado" if snap["workshop_exists"]
+                                                   else "No detectado",
+                                                   snap["workshop_exists"]),
+                                        detail_row(
+                                                   ft.Icons.DESCRIPTION_OUTLINED,
+                                                   "gameinfo.txt",
+                                                   "Escribible" if snap["gameinfo_writable"]
+                                                   else "Bloqueado",
+                                                   snap["gameinfo_writable"]),
+                                    ],
+                                    spacing=12,
+                                    expand=True,
+                                ),
+                                ft.Container(width=1, height=112,
+                                             bgcolor="#263747"),
+                                ft.Column(
+                                    [
+                                        detail_row(
+                                                   getattr(ft.Icons,
+                                                           "CLEANING_SERVICES",
+                                                           ft.Icons.DELETE_OUTLINE),
+                                                   "Limpieza",
+                                                   str(snap["pending_cleanup_count"]),
+                                                   not snap["pending_cleanup_count"]),
+                                        detail_row(
+                                                   ft.Icons.VISIBILITY_OUTLINED,
+                                                   "Visión infectado",
+                                                   snap["vision_state"],
+                                                   snap["vision_state"] != "off"),
+                                        detail_row(
+                                                   ft.Icons.LIST_ALT,
+                                                   "Seleccionados",
+                                                   str(snap["selected_count"]),
+                                                   True),
+                                    ],
+                                    spacing=12,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=22,
+                        ),
+                        bgcolor="#111821",
+                        border=ft.Border.all(1, "#263747"),
+                        border_radius=10,
+                        padding=16,
+                    ),
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Icon(ft.Icons.DESCRIPTION_OUTLINED,
+                                                size=18, color=TEXT_DIM),
+                                        ft.Text("Reporte técnico", size=16,
+                                                color=TEXT,
+                                                weight=ft.FontWeight.W_800),
+                                        ft.Container(expand=True),
+                                        ft.Icon(getattr(ft.Icons, "CONTENT_COPY",
+                                                        ft.Icons.COPY),
+                                                size=16, color=TEXT_DIM),
+                                        ft.Text("Copiable", size=12,
+                                                color=TEXT_DIM),
+                                    ],
+                                    spacing=8,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                ft.TextField(
+                                    value=report,
+                                    multiline=True,
+                                    read_only=True,
+                                    min_lines=8,
+                                    max_lines=8,
+                                    width=696,
+                                    border_color="#263747",
+                                    focused_border_color=ACCENT,
+                                    color=TEXT,
+                                    text_size=12,
+                                    text_style=ft.TextStyle(
+                                        font_family="Consolas"),
+                                    bgcolor="#0C0F16",
+                                    border_radius=8,
+                                    content_padding=14,
+                                ),
+                            ],
+                            spacing=12,
+                        ),
+                        bgcolor="#111821",
+                        border=ft.Border.all(1, "#263747"),
+                        border_radius=10,
+                        padding=10,
+                    ),
+                    ft.Divider(color="#263747", height=1),
+                    ft.Row(
+                        [
+                            ft.Container(expand=True),
+                            ft.TextButton(
+                                "Cerrar",
+                                on_click=lambda ev: close_dialog_anim(cnt),
+                                style=ft.ButtonStyle(
+                                    color=TEXT,
+                                    bgcolor="#1A2633",
+                                    padding=ft.Padding.symmetric(
+                                        horizontal=28, vertical=14),
+                                    shape=ft.RoundedRectangleBorder(radius=10),
+                                ),
+                            ),
+                            ft.FilledButton(
+                                "Copiar reporte",
+                                icon=getattr(ft.Icons, "CONTENT_COPY",
+                                             ft.Icons.COPY),
+                                on_click=copy_report,
+                                style=ft.ButtonStyle(
+                                    bgcolor=ACCENT, color=BG,
+                                    padding=ft.Padding.symmetric(
+                                        horizontal=28, vertical=14),
+                                    shape=ft.RoundedRectangleBorder(radius=10),
+                                ),
+                            ),
+                        ],
+                        spacing=12,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                spacing=14,
+                tight=True,
+            ),
+            760,
+            padded=True,
+        )
+        dlg = ft.AlertDialog(
+            content=cnt,
+            modal=True,
+            actions=[],
+            bgcolor=SURFACE_2,
+            content_padding=0,
+            actions_padding=0,
+            shape=ft.RoundedRectangleBorder(radius=18),
+        )
+        show_dlg(dlg)
+        animate_display(cnt)
 
     def toggle_vision(e):
         if not state["l4d2"]:
@@ -1027,23 +1318,48 @@ def main(page: ft.Page):
 
     def build_sidebar():
         logo = ft.Container(
-            content=(_fit_image(ICONO, 76, 76) if os.path.isfile(ICONO)
-                     else ft.Text("L4D2", size=20, weight=ft.FontWeight.BOLD,
+            content=ft.Column(
+                [
+                    (fit_image(ICONO, 104, 104) if os.path.isfile(ICONO)
+                     else ft.Text("L4D2", size=24, weight=ft.FontWeight.BOLD,
                                   color=ACCENT)),
-            padding=ft.Padding.symmetric(horizontal=14, vertical=4),
-            alignment=ft.Alignment.CENTER_LEFT,
+                    ft.Text("L4D2", size=24, weight=ft.FontWeight.W_800,
+                            color=TEXT),
+                    ft.Text("MOD LOADER", size=11, color=TEXT_DIM,
+                            weight=ft.FontWeight.W_600),
+                ],
+                spacing=0,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.Padding.only(top=8, bottom=10),
+            alignment=ft.Alignment.CENTER,
         )
         vision_off = bool(state["l4d2"]) and \
             core.vision_state(state["l4d2"]) == "off"
 
-        def _action(text, color, on_click):
+        def _section(text):
             return ft.Container(
-                content=ft.Text(text, size=13, color=color, max_lines=2,
-                                overflow=ft.TextOverflow.ELLIPSIS),
+                content=ft.Text(text, size=11, color=TEXT_DIM,
+                                weight=ft.FontWeight.W_600),
+                padding=ft.Padding.only(left=14, top=8, bottom=2),
+            )
+
+        def _action(text, color, icon, on_click, subtle=False):
+            return ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(icon, size=17, color=color),
+                        ft.Text(text, size=12, color=color, max_lines=2,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                expand=True),
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
                 padding=ft.Padding.symmetric(horizontal=14, vertical=10),
                 border_radius=8,
-                bgcolor=SURFACE_2,
-                border=ft.Border.all(1, BORDER),
+                bgcolor=SURFACE_2 if not subtle else None,
+                border=ft.Border.all(1, BORDER) if not subtle else None,
                 on_click=on_click,
                 ink=True,
             )
@@ -1051,7 +1367,6 @@ def main(page: ft.Page):
         return ft.Column(
             [
                 logo,
-                ft.Container(height=6),
                 ft.FilledButton(
                     "JUGAR",
                     icon=(ft.Icons.PLAY_ARROW if hasattr(ft.Icons, "PLAY_ARROW")
@@ -1060,51 +1375,58 @@ def main(page: ft.Page):
                     style=ft.ButtonStyle(bgcolor=ACCENT, color=BG,
                                          shape=ft.RoundedRectangleBorder(radius=8)),
                 ),
-                ft.Container(height=8),
-                nav_item("Mods", "mods", state["view"] == "mods"),
-                nav_item("Activos", "activos", state["view"] == "activos"),
+                ft.Container(height=10),
+                nav_item("Mods", "mods", state["view"] == "mods",
+                         icon=getattr(ft.Icons, "EXTENSION",
+                                      ft.Icons.VIEW_MODULE)),
+                nav_item("Activos", "activos", state["view"] == "activos",
+                         icon=getattr(ft.Icons, "INVENTORY_2_OUTLINED",
+                                      ft.Icons.CHECK_BOX_OUTLINE_BLANK)),
                 ft.Container(height=8),
                 ft.Divider(color=BORDER, height=1),
-                ft.Container(height=8),
-                _action("Restaurar original", DANGER,
-                        lambda e: do_restore()),
+                _section("HERRAMIENTAS"),
+                _action("Diagnóstico", TEXT, getattr(
+                    ft.Icons, "FACT_CHECK_OUTLINED", ft.Icons.INFO_OUTLINE),
+                    open_diagnostic, subtle=True),
+                _action("Última config", TEXT, ft.Icons.RESTORE,
+                        do_restore_last_config, subtle=True),
+                ft.Container(height=6),
+                ft.Divider(color=BORDER, height=1),
+                _section("SISTEMA"),
+                build_health_card(),
+                ft.Container(height=6),
+                ft.Divider(color=BORDER, height=1),
+                _action("Restaurar original", DANGER, ft.Icons.RESTORE,
+                        lambda e: do_restore(), subtle=True),
                 _action("Restaurar Visión de Infectado" if vision_off
                         else "Quitar Visión de Infectado",
-                        ACCENT if vision_off else DANGER, toggle_vision),
-                _action("Limpiar VPKs", AMBER,
-                        lambda e: open_cleanup_vpks(e)),
-                _action("Actualizar lista", TEXT_DIM,
-                        lambda e: load_addons()),
+                        ACCENT if vision_off else DANGER,
+                        ft.Icons.VISIBILITY if vision_off else ft.Icons.VISIBILITY_OFF,
+                        toggle_vision, subtle=True),
                 ft.Container(expand=True),
                 tiktok_footer,
             ],
-            spacing=6, width=170,
+            spacing=6, width=190,
         )
 
     sidebar_holder = ft.Container(content=build_sidebar(), padding=18,
-                                  bgcolor=SURFACE)
+                                  bgcolor="#10131A")
 
     def switch_view(v):
+        if state["view"] == v:
+            return
         dbg("switch_view %s" % v)
         state["view"] = v
         state["preview_id"] = None
         sidebar_holder.content = build_sidebar()
-        view_title.value = "Addons ACTIVOS" if v == "activos" else "Mods en VERSUS"
+        view_title.value = "Addons activos" if v == "activos" else "Mods en Versus"
         header_actions.content = build_header_actions()
         list_toolbar.visible = v == "mods"
-        center_wrap.opacity = 0.4
-        page.update()
+        refresh_list()
 
-        def _fade():
-            center_wrap.opacity = 1.0
-            try:
-                page.update()
-            except Exception as ex:
-                dbg("view fade ERR %r" % ex)
-
-        ui_later(0.06, _fade)
-        refresh_list(stagger=True)
-        page.update()
+    enable_button_ref = [None]
+    remove_button_ref = [None]
+    remove_all_button_ref = [None]
 
     def build_header_actions():
         style = ft.ButtonStyle(bgcolor=ACCENT, color=BG,
@@ -1112,22 +1434,44 @@ def main(page: ft.Page):
                                padding=ft.Padding.symmetric(horizontal=14,
                                                              vertical=10),
                                shape=ft.RoundedRectangleBorder(radius=8))
+        style.bgcolor = {
+            ft.ControlState.DEFAULT: ACCENT,
+            ft.ControlState.DISABLED: BORDER,
+        }
+        style.color = {
+            ft.ControlState.DEFAULT: BG,
+            ft.ControlState.DISABLED: TEXT_DIM,
+        }
         if state["view"] == "activos":
+            remove_button_ref[0] = ft.FilledButton(
+                "Quitar addon", on_click=do_quitar_addon,
+                disabled=not state["active_ids"],
+                style=ft.ButtonStyle(
+                    bgcolor=SURFACE_2, color=TEXT,
+                    shape=ft.RoundedRectangleBorder(radius=8)))
+            remove_all_button_ref[0] = ft.TextButton(
+                "Quitar todos", on_click=do_quitar_todos,
+                disabled=not state["active_ids"],
+                style=ft.ButtonStyle(color=DANGER))
             return ft.Row(
                 [
-                    ft.FilledButton("QUITAR ADDON", on_click=do_quitar_addon,
-                                    style=ft.ButtonStyle(
-                                        bgcolor=SURFACE_2, color=TEXT,
-                                        shape=ft.RoundedRectangleBorder(radius=8))),
-                    ft.TextButton("QUITAR TODOS", on_click=do_quitar_todos,
-                                  style=ft.ButtonStyle(color=DANGER)),
+                    remove_button_ref[0],
+                    remove_all_button_ref[0],
                 ],
                 spacing=8,
             )
+        enable_button_ref[0] = ft.FilledButton(
+            "Habilitar",
+            icon=ft.Icons.CHECK_CIRCLE_OUTLINE,
+            on_click=do_enable,
+            disabled=not state["selected_ids"],
+            tooltip="Habilitar addons seleccionados",
+            style=style,
+        )
         return ft.Row(
             [
                 ft.Container(
-                    content=ft.TextButton("PRESETS", on_click=open_presets,
+                    content=ft.TextButton("Presets", on_click=open_presets,
                                           style=ft.ButtonStyle(
                                               color=ACCENT,
                                               text_style=ft.TextStyle(size=12),
@@ -1138,54 +1482,89 @@ def main(page: ft.Page):
                     border=ft.Border.all(1, BORDER),
                     ink=True,
                 ),
-                ft.FilledButton("HABILITAR SELECCIONADOS", on_click=do_enable,
-                                style=style),
+                enable_button_ref[0],
             ],
             spacing=6,
         )
 
     def load_addons():
-        state["l4d2"] = core.find_l4d2()
-        if not state["l4d2"]:
-            status_dot.bgcolor = DANGER
-            status_text.value = "L4D2 no encontrado"
-            counts_text.value = ""
-            page.update()
-            notify("No se encontró L4D2. Verifique que Steam esté instalado.", "err")
-            return
-        status_dot.bgcolor = ACCENT
-        status_text.value = os.path.basename(state["l4d2"])
-        status_text.tooltip = state["l4d2"]
-        gi = os.path.join(state["l4d2"], "left4dead2", "gameinfo.txt")
-        if os.path.isfile(gi) and not os.access(gi, os.W_OK):
-            notify("El archivo gameinfo.txt no es escribible; ejecute la app como administrador.", "warn")
-        page.update()
-
-        raw = core.list_addons(state["l4d2"])
-        if not raw:
-            notify("No hay addons en addons/workshop.", "warn")
-        for a in raw:
-            info = core.inspect_vpk(a["path"])
-            a["title"] = info["title"]
-            a["is_vscript"] = info["is_vscript"]
-            a["type"] = "VSCRIPT" if a["is_vscript"] else "MOD"
-            a["category"] = core.categorize(a["title"] or a["id"], a["id"])
-            a["description"] = None
-            a["preview_local"] = None
-            a["_preview_url"] = None
-            a["auto_deps"] = []
+        state["_load_generation"] += 1
+        generation = state["_load_generation"]
         state["fetching"] = True
-        state["addons"] = raw
-        state["_fresh_scan"] = True
-        state["_disk_ids"] = set(a["id"] for a in raw)
-        _seed_previews_from_cache()
-        sidebar_holder.content = build_sidebar()
-        refresh_list(stagger=True)
+        if state.get("_load_progress"):
+            close_progress(state["_load_progress"])
+        load_progress = show_progress(
+            "Cargando mods...",
+            "Escaneando addons instalados y datos del Workshop.",
+        )
+        state["_load_progress"] = load_progress
 
-        if hasattr(page, "run_thread"):
-            page.run_thread(fetch_task)
-        else:
-            threading.Thread(target=fetch_task, daemon=True).start()
+        def finish_load_progress():
+            progress = load_progress
+            if state.get("_load_progress") is progress:
+                state["_load_progress"] = None
+                close_progress(progress)
+
+        async def _load():
+            l4d2 = await asyncio.to_thread(core.find_l4d2)
+            if not ui.request_is_current(
+                    generation, state["_load_generation"], state["_closing"]):
+                finish_load_progress()
+                return
+            state["l4d2"] = l4d2
+            if not l4d2:
+                state["fetching"] = False
+                finish_load_progress()
+                status_dot.bgcolor = DANGER
+                status_text.value = "L4D2 no encontrado"
+                counts_text.value = ""
+                safe_update()
+                notify("No se encontró L4D2. Verifique que Steam esté instalado.",
+                       "err")
+                return
+
+            status_dot.bgcolor = ACCENT
+            status_text.value = os.path.basename(l4d2)
+            status_text.tooltip = l4d2
+            gi = os.path.join(l4d2, "left4dead2", "gameinfo.txt")
+            if os.path.isfile(gi) and not os.access(gi, os.W_OK):
+                notify("El archivo gameinfo.txt no es escribible; ejecute la "
+                       "app como administrador.", "warn")
+
+            raw = await asyncio.to_thread(core.list_addons, l4d2)
+            for addon in raw:
+                info = await asyncio.to_thread(core.inspect_vpk, addon["path"])
+                addon["title"] = info["title"]
+                addon["is_vscript"] = info["is_vscript"]
+                addon["type"] = "VSCRIPT" if addon["is_vscript"] else "MOD"
+                addon["category"] = core.categorize(
+                    addon["title"] or addon["id"], addon["id"])
+                addon["description"] = None
+                addon["preview_local"] = None
+                addon["_preview_url"] = None
+                addon["auto_deps"] = []
+
+            if not ui.request_is_current(
+                    generation, state["_load_generation"], state["_closing"]):
+                finish_load_progress()
+                return
+            state["addons"] = raw
+            state["_fresh_scan"] = True
+            state["_disk_ids"] = {addon["id"] for addon in raw}
+            state["_row_cache"].clear()
+            state["_render_signature"] = None
+            _seed_previews_from_cache()
+            sidebar_holder.content = build_sidebar()
+            refresh_list(sync_active=True)
+            await fetch_task(generation, [addon["id"] for addon in raw])
+            finish_load_progress()
+
+        try:
+            track_task(page.run_task(_load))
+        except Exception as ex:
+            state["fetching"] = False
+            finish_load_progress()
+            dbg("load task ERR %r" % ex)
 
     def _seed_previews_from_cache():
         cache_d = os.path.join(os.getenv("LOCALAPPDATA") or os.getcwd(),
@@ -1197,51 +1576,62 @@ def main(page: ft.Page):
             if hits:
                 a["preview_local"] = hits[0]
 
-    def fetch_task():
-        dbg("fetch_task start (%d addons)" % len(state["addons"]))
+    async def fetch_task(generation, ids):
+        dbg("fetch_task start (%d addons)" % len(ids))
         try:
-            details = core.fetch_workshop_details([a["id"] for a in state["addons"]])
+            details = await asyncio.to_thread(core.fetch_workshop_details, ids)
         except Exception as ex:
             details = {}
             dbg("fetch ERR %r" % ex)
         dbg("fetch_task details=%d" % len(details))
-        for a in state["addons"]:
-            d = details.get(a["id"])
-            if not d:
+
+        if not ui.request_is_current(
+                generation, state["_load_generation"], state["_closing"]):
+            return
+        by_id = {addon["id"]: addon for addon in state["addons"]}
+        for aid, detail in details.items():
+            addon = by_id.get(aid)
+            if not addon:
                 continue
-            if d.get("title"):
-                a["title"] = d["title"]
-                a["category"] = core.categorize(d["title"], a["id"])
-            a["description"] = d.get("description")
-            a["description_raw"] = d.get("description_raw")
-            url = d.get("preview_url")
-            if url:
-                a["_preview_url"] = url
-                a["preview_local"] = core.get_cached_image(a["id"], url)
-        known = set(a["id"] for a in state["addons"])
-        titles = {a["id"]: a.get("title") or a["id"] for a in state["addons"]}
-        for a in state["addons"]:
-            raw = a.get("description_raw") or a.get("description") or ""
-            a["auto_deps"] = [s["id"] for s in core.suggest_deps(
-                raw, known, titles)
-                if s["id"] != a["id"]] if raw else []
+            if detail.get("title"):
+                addon["title"] = detail["title"]
+                addon["category"] = core.categorize(detail["title"], aid)
+            addon["description"] = detail.get("description")
+            addon["description_raw"] = detail.get("description_raw")
+            addon["_preview_url"] = detail.get("preview_url")
+        known = set(by_id)
+        titles = {aid: addon.get("title") or aid
+                  for aid, addon in by_id.items()}
+        for addon in state["addons"]:
+            raw = addon.get("description_raw") or addon.get("description") or ""
+            addon["auto_deps"] = [
+                suggestion["id"]
+                for suggestion in core.suggest_deps(raw, known, titles)
+                if suggestion["id"] != addon["id"]
+            ] if raw else []
         state["fetching"] = False
+        state["_row_cache"].clear()
+        state["_render_signature"] = None
         dbg("fetch_task done, fetching=False")
-        refresh_list()
         if state["preview_id"]:
-            show_preview(state["preview_id"], force=True)
+            previewed = get_addon(state["preview_id"])
+            if previewed:
+                pane_set(main_pane, previewed)
+        refresh_list()
         if state["_pending_rescan"]:
             state["_pending_rescan"] = False
             load_addons()
 
-    def watch_workshop():
-        while True:
-            time.sleep(3)
+    async def watch_workshop():
+        while not state["_closing"]:
+            await asyncio.sleep(3)
             try:
                 if not state["l4d2"]:
                     continue
-                _check_game_closed()
-                found = {a["id"] for a in core.list_addons(state["l4d2"])}
+                await _check_game_closed()
+                disk_addons = await asyncio.to_thread(
+                    core.list_addons, state["l4d2"])
+                found = {addon["id"] for addon in disk_addons}
                 if found != state["_disk_ids"]:
                     dbg("workshop changed: %d -> %d" % (
                         len(state["_disk_ids"]), len(found)))
@@ -1250,53 +1640,95 @@ def main(page: ft.Page):
                         state["_pending_rescan"] = True
                         dbg("fetch in progress, pending rescan")
                     else:
-                        ui_later(0.05, load_addons)
+                        load_addons()
+            except asyncio.CancelledError:
+                return
             except Exception as ex:
                 dbg("watch ERR %r" % ex)
 
-    def _check_game_closed():
-        running_now = core.l4d2_running()
+    async def _check_game_closed():
+        running_now = await asyncio.to_thread(core.l4d2_running)
         was_running = state["_l4d2_was_running"]
         state["_l4d2_was_running"] = running_now
+        if running_now != was_running:
+            sidebar_holder.content = build_sidebar()
+            safe_update()
+        if running_now:
+            pending = set(await asyncio.to_thread(
+                core.currently_enabled_orphans, state["l4d2"]))
+            if pending != state["_pending_cleanup_ids"]:
+                set_pending_cleanup(pending, announce=True)
+            return
         if not (was_running and not running_now):
             return
-        removed = core.cleanup_orphans(state["l4d2"], log=dbg)
+        removed = await asyncio.to_thread(
+            core.cleanup_orphans, state["l4d2"], dbg)
+        remaining = set(await asyncio.to_thread(
+            core.currently_enabled_orphans, state["l4d2"]))
+        set_pending_cleanup(remaining)
         if removed:
             dbg("cleanup_orphans tras cierre del juego: %s" % ", ".join(removed))
-            ui_later(0.05, load_addons)
-            ui_later(0.1, lambda: notify(
+            load_addons()
+            notify(
                 "Se quitaron %d addon(s) de los que ya no estás suscrito." % len(removed),
-                "warn"))
+                "warn")
 
     def visible_addons(active_ids):
-        addons = state["addons"]
-        if state["view"] == "activos":
-            addons = [a for a in addons if a["id"] in active_ids]
-        if state["category"] == "Favoritos":
-            addons = [a for a in addons if a["id"] in state["favs"]]
-        elif state["category"] == "VScripts":
-            addons = [a for a in addons if a["is_vscript"]]
-        elif state["category"] != "Todos":
-            addons = [a for a in addons if a["category"] == state["category"]]
-        q = _unaccent(state["query"].strip())
-        if q:
-            addons = [a for a in addons
-                      if q in _unaccent(a.get("title"))
-                      or q in a["id"].lower()]
-        addons = sorted(addons, key=lambda a: (a.get("ctime", 0), a["id"]),
-                        reverse=bool(state["sort_recent"]))
-        return addons
+        return ui.visible_addons(
+            state["addons"], active_ids, state["favs"],
+            view=state["view"], category=state["category"],
+            query=state["query"], sort_recent=state["sort_recent"],
+        )
 
     def update_counts():
-        counts_text.value = "Addons: %d  ·  Activos: %d  ·  Sel: %d" % (
+        counts_text.value = "Addons: %d  |  Activos: %d  |  Seleccionados: %d" % (
             len(state["addons"]), len(state["active_ids"]),
             len(state["selected_ids"]))
+        footer_selection_text.value = (
+            "%d mods seleccionados" % len(state["selected_ids"])
+            if state["selected_ids"] else "Sin selección")
 
-    def refresh_list(stagger=False):
-        dbg("refresh_list stagger=%s" % stagger)
-        state["anim_cancel"] = True
-        list_view.controls.clear()
-        state["rows"] = {}
+    def update_selection_controls():
+        selectable = {
+            addon["id"] for addon in state["addons"]
+            if addon["id"] not in state["active_ids"]
+        }
+        state["selected_ids"].intersection_update(selectable)
+        for aid, row in state["rows"].items():
+            if row.checkbox:
+                row.checkbox.value = aid in state["selected_ids"]
+        selected = bool(state["selected_ids"])
+        desmar_btn.visible = selected and state["view"] == "mods"
+        desmar_btn.text = "Desmarcar selección (%d)" % len(
+            state["selected_ids"])
+        if enable_button_ref[0]:
+            enable_button_ref[0].disabled = not selected
+        update_counts()
+
+    def make_empty_state():
+        title, detail = ui.empty_state_message(
+            state["view"], state["category"], state["query"],
+            bool(state["addons"]),
+        )
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Icon(ft.Icons.SEARCH_OFF, size=30, color=TEXT_DIM),
+                    ft.Text(title, size=15, weight=ft.FontWeight.W_600,
+                            color=TEXT),
+                    ft.Text(detail, size=12, color=TEXT_DIM,
+                            text_align=ft.TextAlign.CENTER),
+                ],
+                spacing=6,
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            alignment=ft.Alignment.CENTER,
+            padding=36,
+        )
+
+    def refresh_list(sync_active=False):
+        dbg("refresh_list")
 
         if state["l4d2"] and state["_fresh_scan"]:
             orphans_cleaned = core.cleanup_orphans(state["l4d2"], log=debug_log)
@@ -1305,78 +1737,123 @@ def main(page: ft.Page):
                     _quant(len(orphans_cleaned), "addon", "addons"),
                     "" if len(orphans_cleaned) == 1 else "s",
                     "" if len(orphans_cleaned) == 1 else "s"), "warn")
+            pending = (set(core.currently_enabled_orphans(state["l4d2"]))
+                       if core.l4d2_running() else set())
+            set_pending_cleanup(pending, announce=True)
             state["_fresh_scan"] = False
 
-        state["active_ids"] = set(core.currently_enabled(state["l4d2"])) \
-            if state["l4d2"] else set()
+        if sync_active:
+            state["active_ids"] = set(core.currently_enabled(state["l4d2"])) \
+                if state["l4d2"] else set()
         active = state["active_ids"]
         addons = visible_addons(active)
-        for idx, a in enumerate(addons):
-            is_active = a["id"] in active
-            in_mods_view = state["view"] == "mods"
-            row = ModRow(a,
-                         on_select=lambda ad: show_preview(ad["id"]),
-                         on_toggle=on_toggle,
-                         active=is_active,
-                         with_checkbox=in_mods_view,
-                         dim=is_active and in_mods_view,
-                         fav=a["id"] in state["favs"],
-                         on_fav=toggle_fav,
-                         on_leave=clear_preview)
-            if row.checkbox:
-                row.checkbox.value = a["id"] in state["selected_ids"]
-            row.set_selected(a["id"] == state["preview_id"])
-            if stagger:
-                row.opacity = 0.0
-                row.scale = 0.92
-            state["rows"][a["id"]] = row
-            list_view.controls.append(row)
-        update_counts()
+        signatures = tuple(
+            ui.row_signature(
+                addon, addon["id"] in active,
+                addon["id"] in state["favs"], state["view"])
+            for addon in addons
+        )
+        render_signature = (
+            signatures,
+            state["view"], state["category"], state["query"],
+            state["sort_recent"],
+        )
+
+        if render_signature != state["_render_signature"]:
+            rows = {}
+            controls = []
+            cache = state["_row_cache"]
+            for addon, signature in zip(addons, signatures):
+                cached = cache.get(addon["id"])
+                row = cached[1] if cached and cached[0] == signature else None
+                if row is None:
+                    is_active = addon["id"] in active
+                    in_mods_view = state["view"] == "mods"
+                    row = ModRow(
+                        addon,
+                        on_select=lambda ad: show_preview(ad["id"]),
+                        on_toggle=on_toggle,
+                        active=is_active,
+                        with_checkbox=in_mods_view,
+                        fav=addon["id"] in state["favs"],
+                        on_fav=toggle_fav,
+                        show_active_badge=in_mods_view,
+                        on_hover=preview_hover,
+                        on_leave=preview_leave,
+                        show_thumbnail=True,
+                    )
+                    cache[addon["id"]] = (signature, row)
+                rows[addon["id"]] = row
+                controls.append(row)
+            state["rows"] = rows
+            list_view.controls = controls if controls else [make_empty_state()]
+            state["_render_signature"] = render_signature
+
+        visible_ids = [addon["id"] for addon in addons]
+        if state.get("hover_preview_id") not in visible_ids:
+            state["hover_preview_id"] = None
+        preview_panel.visible = bool(visible_ids)
+        if visible_ids:
+            target = (state["preview_id"] if state["preview_id"] in visible_ids
+                      else visible_ids[0])
+            if state["preview_id"] != target:
+                state["preview_id"] = target
+                pane_set(main_pane, get_addon(target))
+        else:
+            state["preview_id"] = None
+            pane_clear(main_pane, "No hay un addon visible para mostrar")
+
+        for aid, row in state["rows"].items():
+            row.set_selected(aid == state["preview_id"])
+        update_detail_actions()
+        update_selection_controls()
+        if remove_button_ref[0]:
+            remove_button_ref[0].disabled = not active
+        if remove_all_button_ref[0]:
+            remove_all_button_ref[0].disabled = not active
         safe_update()
-
-        if stagger:
-            state["anim_cancel"] = False
-            gen = state.get("anim_gen", 0) + 1
-            state["anim_gen"] = gen
-            for idx, a in enumerate(addons):
-                rr = state["rows"].get(a["id"])
-                if not rr:
-                    continue
-
-                def _reveal(rr2=rr, g=gen):
-                    if state.get("anim_cancel") or state["rows"].get(rr2.addon["id"]) is not rr2:
-                        dbg("stagger skip %s" % rr2.addon["id"])
-                        return
-                    rr2.opacity = rr2._target_opacity
-                    rr2.scale = 1.0
-                    try:
-                        page.update()
-                    except Exception as ex:
-                        dbg("reveal ERR %s %r" % (rr2.addon["id"], ex))
-
-                ui_later(0.03 * idx, _reveal)
-            dbg("stagger scheduled gen=%s" % gen)
 
     def on_toggle(addon, value):
         if value:
             state["selected_ids"].add(addon["id"])
-            for d in effective_deps(addon["id"]):
-                da = get_addon(d)
-                if da and d not in state["active_ids"]:
-                    state["selected_ids"].add(d)
-                    r = state["rows"].get(d)
-                    if r and r.checkbox:
-                        r.checkbox.value = True
+            for dependency in effective_deps(addon["id"]):
+                dependency_addon = get_addon(dependency)
+                if dependency_addon and dependency not in state["active_ids"]:
+                    state["selected_ids"].add(dependency)
         else:
             state["selected_ids"].discard(addon["id"])
-        update_counts()
-        page.update()
+        update_selection_controls()
+        safe_update()
 
     def search_changed(e):
-        dbg("search %r" % e.control.value)
-        state["query"] = e.control.value
-        clear_box.visible = bool(e.control.value)
-        refresh_list(stagger=True)
+        value = e.control.value or ""
+        dbg("search %r" % value)
+        clear_box.visible = bool(value)
+        state["_search_generation"] += 1
+        generation = state["_search_generation"]
+        previous = state.get("_search_task")
+        if previous:
+            previous.cancel()
+
+        async def _debounced_search():
+            try:
+                await asyncio.sleep(0.18)
+            except asyncio.CancelledError:
+                return
+            if not ui.request_is_current(
+                    generation, state["_search_generation"],
+                    state["_closing"]):
+                return
+            state["query"] = value
+            refresh_list()
+
+        try:
+            state["_search_task"] = track_task(page.run_task(
+                _debounced_search))
+        except Exception:
+            state["query"] = value
+            refresh_list()
+        safe_update()
 
     search_field.on_change = search_changed
 
@@ -1399,26 +1876,19 @@ def main(page: ft.Page):
         list_h = max(150.0, min(340.0, wh - 320 - img_h))
         return dw, img_h, list_h
 
-    def dialog_content(rows, pane, banner=None, height=200, subtitle=None, width=560):
-        kids = []
-        if banner:
-            kids.append(banner)
-        if subtitle:
-            kids.append(ft.Text(subtitle, size=11, color=TEXT_DIM))
-        kids.append(pane["img"])
-        kids.append(pane["title"])
-        kids.append(pane["meta"])
-        if pane["desc"]:
-            kids.append(pane["desc"])
-        kids.append(ft.Container(height=2))
-        kids.append(ft.ListView(rows, height=height, spacing=4,
-                                scroll=ft.ScrollMode.AUTO))
-        cnt = ft.Container(content=ft.Column(kids, spacing=4), width=width)
-        cnt.animate_scale = ft.Animation(220, "easeOut")
-        cnt.animate_opacity = ft.Animation(180, "easeOut")
-        cnt.scale = 0.93
-        cnt.opacity = 0.0
-        return cnt
+    def show_progress(title, subtitle):
+        cnt = progress_dialog_content(title, subtitle)
+        dlg = ft.AlertDialog(content=cnt, actions=[], modal=True)
+        progress = {"content": cnt}
+        show_dlg(dlg)
+        animate_display(cnt)
+        return progress
+
+    def close_progress(progress):
+        if not progress:
+            return
+        if progress.get("content"):
+            close_dialog_anim(progress["content"])
 
     def do_enable(e):
         if not require_game_closed():
@@ -1431,7 +1901,9 @@ def main(page: ft.Page):
             return
 
         _dw, _img_h, _list_h = dialog_metrics()
-        pane = make_pane(int(_img_h), int(_dw), page, desc_lines=1)
+        _dw = max(640.0, min(780.0, win_size()[0] * 0.70))
+        _img_h = max(120.0, min(148.0, win_size()[1] * 0.21))
+        pane = make_pane(int(_img_h), 230, page, desc_lines=0)
         hov = make_hover(pane)
         leave = make_leave(pane)
         extra_deps = {}
@@ -1450,7 +1922,8 @@ def main(page: ft.Page):
                 extra = "Requisito de: " + ", ".join(parents)
             row, box = dialog_row(a, with_checkbox=True, value=True,
                                   check_cb=lambda ad, v: None, on_hover=hov,
-                                  on_leave=leave, extra_meta=extra)
+                                  on_leave=leave, extra_meta=extra,
+                                  compact=True)
             rows.append((a, box))
             pane_rows.append(row)
 
@@ -1503,38 +1976,67 @@ def main(page: ft.Page):
                 close_dialog_anim(cnt, pane)
                 notify("Ningún addon compatible seleccionado.", "warn")
                 return
-            ok = core.enable(state["l4d2"], compat_addons, log=debug_log)
-            close_dialog_anim(cnt, pane)
-            if ok:
-                for c in compat_addons:
-                    state["selected_ids"].discard(c["id"])
-                refresh_list()
-                msg = "%s habilitado%s correctamente" % (
-                    _quant(len(compat_addons), "addon", "addons"),
-                    "" if len(compat_addons) == 1 else "s")
-                if omitted:
-                    msg += "  ·  %d VScript omitido(s)" % omitted
-                notify(msg, "ok")
-            else:
+            close_dlg()
+            progress = show_progress(
+                "Activando addons...",
+                "Aplicando la selección en la configuración de L4D2.",
+            )
+
+            async def _run_enable():
+                try:
+                    save_last_config("Antes de habilitar addons")
+                    ok = await asyncio.to_thread(
+                        core.enable, state["l4d2"], compat_addons, debug_log)
+                except Exception as ex:
+                    ok = False
+                    dbg("enable async ERR %r" % ex)
+                if state["_closing"]:
+                    return
+                close_progress(progress)
+                if ok:
+                    for c in compat_addons:
+                        state["selected_ids"].discard(c["id"])
+                    refresh_list(sync_active=True)
+                    msg = "%s habilitado%s correctamente" % (
+                        _quant(len(compat_addons), "addon", "addons"),
+                        "" if len(compat_addons) == 1 else "s")
+                    if omitted:
+                        msg += "  ·  %d VScript omitido(s)" % omitted
+                    notify(msg, "ok")
+                else:
+                    notify("No se pudieron habilitar los addons", "err")
+
+            try:
+                track_task(page.run_task(_run_enable))
+            except Exception as ex:
+                dbg("enable task ERR %r" % ex)
+                close_progress(progress)
                 notify("No se pudieron habilitar los addons", "err")
 
         sub = ("Se incluye %d dependencia automáticamente." % n_deps
                if n_deps == 1 else
                "Se incluyen %d dependencias automáticamente." % n_deps
                ) if n_deps else None
-        cnt = dialog_content(pane_rows, pane, banner=banner, subtitle=sub,
-                             height=int(_list_h), width=int(_dw))
+        if pane_rows:
+            pane_set(pane, rows[0][0])
+        cnt = enable_dialog_content(
+            pane_rows, pane, len(rows), n_deps, banner=banner,
+            height=int(_list_h), width=int(_dw),
+            current_addon=rows[0][0] if rows else None)
         dlg = ft.AlertDialog(
-            title=ft.Text("¿Habilitar los siguientes addons?"),
             content=cnt,
             actions=[
-                ft.TextButton("CANCELAR",
+                ft.TextButton("Cancelar",
                               on_click=lambda ev: close_dialog_anim(cnt, pane)),
-                ft.FilledButton("HABILITAR", on_click=lambda ev: confirm_enable(),
+                ft.FilledButton("Habilitar", on_click=lambda ev: confirm_enable(),
                                 style=ft.ButtonStyle(bgcolor=ACCENT, color=BG,
-                                                     shape=ft.RoundedRectangleBorder(radius=8))),
+                                                    shape=ft.RoundedRectangleBorder(radius=8))),
             ],
             modal=True,
+            bgcolor=SURFACE_2,
+            content_padding=0,
+            actions_padding=ft.Padding.only(left=22, right=22, bottom=18, top=4),
+            shape=ft.RoundedRectangleBorder(radius=16),
         )
 
         show_dlg(dlg)
@@ -1555,51 +2057,302 @@ def main(page: ft.Page):
             return
         checked = set()
 
-        def toggle(ad, val):
-            (checked.add if val else checked.discard)(ad["id"])
-
         _dw, _img_h, _list_h = dialog_metrics()
-        pane = make_pane(int(_img_h), int(_dw), page, desc_lines=1)
+        _dw = max(640.0, min(780.0, win_size()[0] * 0.70))
+        _img_h = max(120.0, min(148.0, win_size()[1] * 0.21))
+        pane = make_pane(int(_img_h), 230, page, desc_lines=0)
         hov = make_hover(pane)
         leave = make_leave(pane)
-        rows = [dialog_row(a, with_checkbox=True, value=False, check_cb=toggle,
-                           on_hover=hov, on_leave=leave)[0] for a in act]
+        remove_list = ft.ListView(height=int(_list_h), spacing=6,
+                                  scroll=ft.ScrollMode.AUTO)
+        selected_count = count_badge("0 seleccionados", AMBER)
+        visible_count = ft.Text("", size=11, color=TEXT_DIM)
+        remove_button_ref_local = [None]
 
-        cnt = dialog_content(rows, pane, height=int(_list_h), width=int(_dw))
-        dlg = ft.AlertDialog(
-            title=ft.Text("¿Quitar los siguientes addons?"),
-            content=cnt,
-            actions=[
-                ft.TextButton("CANCELAR", on_click=lambda ev: close_dialog_anim(cnt, pane)),
-                ft.FilledButton("QUITAR", on_click=lambda ev: confirm_quit(),
-                                style=ft.ButtonStyle(bgcolor=DANGER, color=BG,
-                                                     shape=ft.RoundedRectangleBorder(radius=8))),
-            ],
-            modal=True,
+        def update_remove_controls():
+            n = len(checked)
+            selected_count.content.value = _quant(
+                n, "seleccionado", "seleccionados")
+            selected_count.bgcolor = ACCENT if n else AMBER_SOFT
+            selected_count.border = None if n else ft.Border.all(1, AMBER)
+            selected_count.content.color = BG if n else AMBER
+            if remove_button_ref_local[0]:
+                remove_button_ref_local[0].disabled = not bool(checked)
+
+        def toggle(ad, val):
+            (checked.add if val else checked.discard)(ad["id"])
+            update_remove_controls()
+            safe_update()
+
+        def empty_remove_state(query):
+            message = ("No hay coincidencias para quitar."
+                       if query.strip() else "No hay addons activos visibles.")
+            detail = ("Prueba otro nombre o ID."
+                      if query.strip() else
+                      "Los addons activos aparecerán aquí.")
+            return ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Icon(ft.Icons.SEARCH_OFF, size=28, color=TEXT_DIM),
+                        ft.Text(message, size=13,
+                                weight=ft.FontWeight.W_600, color=TEXT),
+                        ft.Text(detail, size=11, color=TEXT_DIM,
+                                text_align=ft.TextAlign.CENTER),
+                    ],
+                    spacing=6,
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                alignment=ft.Alignment.CENTER,
+                padding=24,
+            )
+
+        def rebuild_remove_rows(query=""):
+            matches = ui.filter_addons_by_name(act, query)
+            visible_count.value = "%d visible%s" % (
+                len(matches), "" if len(matches) == 1 else "s")
+            if matches:
+                rows = []
+                for addon in matches:
+                    row, _box = dialog_row(
+                        addon,
+                        with_checkbox=True,
+                        value=addon["id"] in checked,
+                        check_cb=toggle,
+                        on_hover=hov,
+                        on_leave=leave,
+                        compact=True,
+                        show_status=False,
+                    )
+                    rows.append(row)
+                remove_list.controls = rows
+                current_ids = {addon["id"] for addon in matches}
+                if pane["current_id"] not in current_ids:
+                    pane_set(pane, matches[0])
+            else:
+                remove_list.controls = [empty_remove_state(query)]
+                pane_clear(pane, "No hay un addon activo para mostrar")
+            update_remove_controls()
+
+        def search_remove_changed(e):
+            rebuild_remove_rows(e.control.value or "")
+            safe_update()
+
+        remove_search = ft.TextField(
+            hint_text="Buscar addon activo por nombre o ID...",
+            border_color=BORDER,
+            focused_border_color=DANGER,
+            color=TEXT,
+            hint_style=ft.TextStyle(color=TEXT_DIM),
+            border_radius=8,
+            height=42,
+            content_padding=10,
+            prefix_icon=ft.Icons.SEARCH,
+            on_change=search_remove_changed,
+        )
+
+        pane["title"].size = 15
+        pane["title"].weight = ft.FontWeight.W_700
+        pane["meta"].size = 11
+        backdrop_height = int(pane["height"] + 42)
+        pane["backdrop_layer"] = ft.Container(
+            width=int(_dw) - 36,
+            height=backdrop_height,
+            opacity=1.0,
+        )
+        remove_overlay = ft.Container(
+            width=int(_dw) - 36,
+            height=backdrop_height,
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment(-1, 0),
+                end=ft.Alignment(1, 0),
+                colors=["#11131AF2", "#11131AC8", "#11131A96"],
+            ),
+        )
+        remove_wash = ft.Container(
+            width=int(_dw) - 36,
+            height=backdrop_height,
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment(-1, -1),
+                end=ft.Alignment(1, 1),
+                colors=["#55351D24", "#0011131A", "#3311131A"],
+            ),
+            opacity=0.82,
+        )
+        top = ft.Container(
+            content=ft.Stack(
+                [
+                    pane["backdrop_layer"],
+                    remove_wash,
+                    remove_overlay,
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Container(
+                                    content=pane["img"],
+                                    bgcolor="#0E0F15",
+                                    border=ft.Border.all(1, BORDER),
+                                    border_radius=8,
+                                    padding=8,
+                                ),
+                                ft.Container(
+                                    content=ft.Column(
+                                        [
+                                            pane["title"],
+                                            pane["meta"],
+                                            ft.Row(
+                                                [
+                                                    count_badge(_quant(
+                                                        len(act), "activo",
+                                                        "activos"), AMBER),
+                                                    selected_count,
+                                                ],
+                                                spacing=8,
+                                                wrap=True,
+                                            ),
+                                            ft.Row(
+                                                [
+                                                    ft.Icon(
+                                                        ft.Icons.INFO_OUTLINE,
+                                                        size=16,
+                                                        color=TEXT_DIM),
+                                                    ft.Text(
+                                                        "Pasa el mouse por un "
+                                                        "addon para revisar su "
+                                                        "preview antes de "
+                                                        "quitarlo.",
+                                                        size=12,
+                                                        color=TEXT_DIM,
+                                                        max_lines=2,
+                                                        overflow=ft.TextOverflow.ELLIPSIS,
+                                                        expand=True,
+                                                    ),
+                                                ],
+                                                spacing=8,
+                                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                            ),
+                                        ],
+                                        spacing=8,
+                                    ),
+                                    expand=True,
+                                    padding=ft.Padding.only(left=10, top=2),
+                                ),
+                            ],
+                            spacing=12,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
+                        ),
+                        padding=12,
+                    ),
+                ],
+                width=int(_dw) - 36,
+                height=backdrop_height,
+            ),
+            bgcolor="#11131A",
+            border=ft.Border.all(1, "#4B2F36"),
+            border_radius=8,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+        )
+
+        cnt = dialog_shell(
+            ft.Column(
+                [
+                    modal_header(ft.Icons.REMOVE_CIRCLE_OUTLINE,
+                                 "Quitar addons",
+                                 "Selecciona solo lo que dejará de cargarse.",
+                                 DANGER),
+                    top,
+                    remove_search,
+                    ft.Row(
+                        [
+                            ft.Text("Addons activos", size=12,
+                                    weight=ft.FontWeight.W_700, color=TEXT),
+                            ft.Container(expand=True),
+                            visible_count,
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(
+                        content=remove_list,
+                        border=ft.Border.all(1, BORDER),
+                        border_radius=8,
+                        padding=6,
+                        bgcolor="#111116",
+                    ),
+                ],
+                spacing=12,
+            ),
+            int(_dw),
+            padded=True,
         )
 
         def confirm_quit():
             if not checked:
-                close_dialog_anim(cnt, pane)
                 notify("Seleccione al menos un addon para quitar.", "warn")
                 return
             ids = list(checked)
             extra = deps_sin_uso(ids)
             total = sorted(set(ids) | set(extra))
-            ok = core.disable(state["l4d2"], total, log=debug_log)
-            close_dialog_anim(cnt, pane)
-            if ok:
-                state["selected_ids"].difference_update(total)
-                refresh_list()
-                msg = "%s deshabilitado%s" % (
-                    _quant(len(total), "addon", "addons"),
-                    "" if len(total) == 1 else "s")
-                if extra:
-                    msg += "  ·  %s sin uso" % _quant(len(extra),
-                                                       "requisito", "requisitos")
-                notify(msg, "ok")
-            else:
+            close_dlg()
+            progress = show_progress(
+                "Quitando addons...",
+                "Actualizando la configuración activa de L4D2.",
+            )
+
+            async def _run_disable():
+                try:
+                    save_last_config("Antes de quitar addons")
+                    ok = await asyncio.to_thread(
+                        core.disable, state["l4d2"], total, debug_log)
+                except Exception as ex:
+                    ok = False
+                    dbg("disable async ERR %r" % ex)
+                if state["_closing"]:
+                    return
+                close_progress(progress)
+                if ok:
+                    state["selected_ids"].difference_update(total)
+                    refresh_list(sync_active=True)
+                    msg = "%s deshabilitado%s" % (
+                        _quant(len(total), "addon", "addons"),
+                        "" if len(total) == 1 else "s")
+                    if extra:
+                        msg += "  ·  %s sin uso" % _quant(
+                            len(extra), "requisito", "requisitos")
+                    notify(msg, "ok")
+                else:
+                    notify("No se pudieron quitar los addons", "err")
+
+            try:
+                track_task(page.run_task(_run_disable))
+            except Exception as ex:
+                dbg("disable task ERR %r" % ex)
+                close_progress(progress)
                 notify("No se pudieron quitar los addons", "err")
+
+        remove_button_ref_local[0] = ft.FilledButton(
+            "Quitar",
+            icon=ft.Icons.REMOVE_CIRCLE_OUTLINE,
+            on_click=lambda ev: confirm_quit(),
+            disabled=True,
+            style=ft.ButtonStyle(bgcolor=DANGER, color=BG,
+                                 shape=ft.RoundedRectangleBorder(radius=8)),
+        )
+
+        rebuild_remove_rows()
+        dlg = ft.AlertDialog(
+            content=cnt,
+            actions=[
+                ft.TextButton("Cancelar",
+                              on_click=lambda ev: close_dialog_anim(cnt, pane)),
+                remove_button_ref_local[0],
+            ],
+            modal=True,
+            bgcolor=SURFACE_2,
+            content_padding=0,
+            actions_padding=ft.Padding.only(left=22, right=22, bottom=18, top=4),
+            shape=ft.RoundedRectangleBorder(radius=16),
+        )
 
         show_dlg(dlg)
         animate_display(cnt)
@@ -1612,23 +2365,24 @@ def main(page: ft.Page):
             notify("No hay addons activos para quitar.", "warn")
             return
 
-        cnt = ft.Container(
-            content=ft.Text(
-                "Se quitarán %s. Volverán a estar disponibles en MODS." % _quant(
-                    n, "addon", "addons")),
-            padding=ft.Padding.symmetric(horizontal=4, vertical=4),
+        cnt = confirm_dialog_content(
+            ft.Icons.DELETE_SWEEP,
+            "Quitar todos los activos",
+            "Se deshabilitarán todos los addons cargados por el loader.",
+            [
+                "Se quitarán %s." % _quant(n, "addon activo", "addons activos"),
+                "Volverán a estar disponibles en la vista Mods.",
+                "No se borrarán los VPK originales de Workshop.",
+            ],
+            width=450,
+            color=DANGER,
         )
-        cnt.animate_scale = ft.Animation(220, "easeOut")
-        cnt.animate_opacity = ft.Animation(180, "easeOut")
-        cnt.scale = 0.93
-        cnt.opacity = 0.0
 
         dlg = ft.AlertDialog(
-            title=ft.Text("¿Quitar todos los addons activos?"),
             content=cnt,
             actions=[
-                ft.TextButton("CANCELAR", on_click=lambda ev: close_dialog_anim(cnt)),
-                ft.FilledButton("QUITAR TODOS", on_click=lambda ev: confirm_quit_all(),
+                ft.TextButton("Cancelar", on_click=lambda ev: close_dialog_anim(cnt)),
+                ft.FilledButton("Quitar todos", on_click=lambda ev: confirm_quit_all(),
                                 style=ft.ButtonStyle(bgcolor=DANGER, color=BG,
                                                      shape=ft.RoundedRectangleBorder(radius=8))),
             ],
@@ -1637,15 +2391,37 @@ def main(page: ft.Page):
 
         def confirm_quit_all():
             ids = list(state["active_ids"])
-            ok = core.disable(state["l4d2"], ids, log=debug_log)
-            close_dialog_anim(cnt)
-            if ok:
-                state["selected_ids"].difference_update(ids)
-                refresh_list()
-                notify("%s deshabilitado%s" % (
-                    _quant(len(ids), "addon", "addons"),
-                    "" if len(ids) == 1 else "s"), "ok")
-            else:
+            close_dlg()
+            progress = show_progress(
+                "Quitando addons...",
+                "Deshabilitando todos los addons activos.",
+            )
+
+            async def _run_disable_all():
+                try:
+                    save_last_config("Antes de quitar todos")
+                    ok = await asyncio.to_thread(
+                        core.disable, state["l4d2"], ids, debug_log)
+                except Exception as ex:
+                    ok = False
+                    dbg("disable all async ERR %r" % ex)
+                if state["_closing"]:
+                    return
+                close_progress(progress)
+                if ok:
+                    state["selected_ids"].difference_update(ids)
+                    refresh_list(sync_active=True)
+                    notify("%s deshabilitado%s" % (
+                        _quant(len(ids), "addon", "addons"),
+                        "" if len(ids) == 1 else "s"), "ok")
+                else:
+                    notify("No se pudieron quitar los addons", "err")
+
+            try:
+                track_task(page.run_task(_run_disable_all))
+            except Exception as ex:
+                dbg("disable all task ERR %r" % ex)
+                close_progress(progress)
                 notify("No se pudieron quitar los addons", "err")
 
         show_dlg(dlg)
@@ -1657,62 +2433,105 @@ def main(page: ft.Page):
             r = ft.Container(
                 content=ft.Row(
                     [
-                        ft.Text(name, size=13, color=TEXT, expand=True,
-                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                        ft.Text("%d addons" % len(ids), size=11, color=TEXT_DIM),
-                        ft.TextButton("USAR",
+                        ft.Column(
+                            [
+                                ft.Text(name, size=13, color=TEXT,
+                                        weight=ft.FontWeight.W_600,
+                                        max_lines=1,
+                                        overflow=ft.TextOverflow.ELLIPSIS),
+                                ft.Text(_quant(len(ids), "addon", "addons"),
+                                        size=11, color=TEXT_DIM),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        ft.TextButton("Usar",
                                       on_click=lambda ev, n=name: use_preset(n),
                                       style=ft.ButtonStyle(color=ACCENT)),
-                        ft.TextButton("QUITAR",
+                        ft.TextButton("Quitar",
                                       on_click=lambda ev, n=name: remove_preset(n),
                                       style=ft.ButtonStyle(color=DANGER)),
                     ],
                     spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                padding=ft.Padding.symmetric(horizontal=10, vertical=6),
-                bgcolor=SURFACE, border_radius=8,
+                padding=ft.Padding.symmetric(horizontal=12, vertical=9),
+                bgcolor=SURFACE,
+                border=ft.Border.all(1, BORDER),
+                border_radius=8,
             )
             rows.append(r)
         if not rows:
-            rows.append(ft.Text("Sin presets todavía. Seleccione addons y use "
-                                "GUARDAR SELECCIÓN.",
-                                size=11, color=TEXT_DIM))
+            rows.append(ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Icon(ft.Icons.SAVE_OUTLINED, size=24,
+                                color=TEXT_DIM),
+                        ft.Text("Sin presets guardados", size=13,
+                                color=TEXT,
+                                weight=ft.FontWeight.W_600),
+                        ft.Text("Selecciona addons y guarda una combinación "
+                                "para usarla después.",
+                                size=11, color=TEXT_DIM,
+                                text_align=ft.TextAlign.CENTER),
+                    ],
+                    spacing=6,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                height=118,
+                alignment=ft.Alignment.CENTER,
+            ))
         tf = ft.TextField(hint_text="Nombre del preset...", height=40,
                           border_color=BORDER, focused_border_color=ACCENT,
                           color=TEXT, hint_style=ft.TextStyle(color=TEXT_DIM),
                           border_radius=8, content_padding=10)
-        list_height = min(220, max(60, 44 * max(len(rows), 1)))
+        list_height = min(230, max(120, 56 * max(len(rows), 1)))
         card = ft.Container(
             content=ft.Column(
                 [
                     ft.Row(
                         [
-                            ft.Text("PRESETS", size=16,
-                                    weight=ft.FontWeight.BOLD, color=TEXT),
-                            ft.Container(expand=True),
-                            ft.TextButton("CERRAR", on_click=lambda ev: hide_card(),
-                                          style=ft.ButtonStyle(color=TEXT_DIM,
-                                                               text_style=ft.TextStyle(size=12))),
+                            ft.Container(
+                                content=modal_header(
+                                    ft.Icons.SAVE_OUTLINED,
+                                    "Presets",
+                                    "Guarda y reutiliza selecciones de addons.",
+                                    ACCENT),
+                                expand=True,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CLOSE,
+                                icon_color=TEXT_DIM,
+                                tooltip="Cerrar",
+                                on_click=lambda ev: hide_card(),
+                            ),
                         ],
                         spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
                     ),
-                    ft.Container(height=4),
-                    ft.ListView(rows, height=list_height, spacing=4,
-                                scroll=ft.ScrollMode.AUTO),
+                    ft.Container(
+                        content=ft.ListView(rows, height=list_height, spacing=6,
+                                            scroll=ft.ScrollMode.AUTO),
+                        bgcolor="#111116",
+                        border=ft.Border.all(1, BORDER),
+                        border_radius=8,
+                        padding=6,
+                    ),
                     tf,
-                    ft.Container(height=2),
                     ft.FilledButton(
-                        "GUARDAR SELECCIÓN (%d)" % len(state["selected_ids"]),
+                        "Guardar selección (%d)" % len(state["selected_ids"]),
+                        icon=ft.Icons.SAVE_OUTLINED,
                         on_click=lambda ev: save_preset(tf),
+                        disabled=not state["selected_ids"],
                         style=ft.ButtonStyle(bgcolor=ACCENT, color=BG,
                                              shape=ft.RoundedRectangleBorder(radius=8))),
                 ],
-                spacing=8,
+                spacing=12,
                 tight=True,
             ),
-            width=380,
+            width=430,
             bgcolor=SURFACE_2,
-            border_radius=16,
+            border_radius=8,
             padding=18,
             border=ft.Border.all(1, BORDER),
         )
@@ -1749,292 +2568,438 @@ def main(page: ft.Page):
         hide_card()
         notify("Preset '%s' eliminado" % name, "ok")
 
-    def open_cleanup_vpks(e):
+    def do_restore():
         if not state["l4d2"]:
             notify("No se encontró L4D2.", "warn")
             return
         if not require_game_closed():
             return
-        vpks = core.list_addons(state["l4d2"])
-        if not vpks:
-            notify("No hay VPKs en addons/workshop/ para limpiar.", "warn")
-            return
-        active = set(state["active_ids"])
-        checked = set()
-        rows = []
-        preview_img = ft.Image(src="", fit=ft.BoxFit.CONTAIN, border_radius=10,
-                               width=150, height=200, visible=False)
-        preview_msg = ft.Text("Coloca el cursor sobre\nun addon para verlo",
-                              size=11, color=TEXT_DIM,
-                              text_align=ft.TextAlign.CENTER)
 
-        def show_cleanup_preview(aid):
-            a = get_addon(aid)
-            lp = (a.get("preview_local") if a else None)
-            if lp and os.path.isfile(lp):
-                preview_img.src = lp
-                preview_img.visible = True
-                preview_msg.visible = False
-            else:
-                preview_img.visible = False
-                preview_msg.visible = True
-            try:
-                page.update()
-            except Exception:
-                pass
-
-        for v in vpks:
-            aid = v["id"]
-            a = get_addon(aid)
-            title = (a.get("title") if a else None)
-            if not title:
-                title = core.inspect_vpk(v["path"]).get("title") or aid
-            is_active = aid in active
-            box = ft.Checkbox(
-                value=False, active_color=DANGER,
-                on_change=lambda ev, i=aid: (
-                    checked.add(i) if ev.control.value else checked.discard(i)),
-            )
-            badges = [ft.Text(aid, size=11, color=TEXT_DIM)]
-            if is_active:
-                badges.append(ft.Container(
-                    content=ft.Text("ACTIVO", size=9,
-                                    weight=ft.FontWeight.W_700, color=AMBER),
-                    bgcolor=AMBER_SOFT,
-                    padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-                    border_radius=4,
-                ))
-            rows.append(ft.Container(
-                content=ft.Row(
-                    [
-                        box,
-                        ft.Column(
-                            [
-                                ft.Text(title, size=13, color=TEXT,
-                                        max_lines=1,
-                                        overflow=ft.TextOverflow.ELLIPSIS),
-                                ft.Row(badges, spacing=6),
-                            ],
-                            spacing=2, expand=True,
-                        ),
-                    ],
-                    spacing=10,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                padding=ft.Padding.symmetric(horizontal=10, vertical=7),
-                bgcolor=SURFACE,
-                border_radius=8,
-                on_hover=lambda ev, i=aid: (
-                    show_cleanup_preview(i)
-                    if str(getattr(ev, "data", "")).lower() in ("true", "1")
-                    else None),
-            ))
-
-        def confirm_cleanup():
-            if not checked:
-                notify("Seleccione al menos un VPK para borrar.", "warn")
+        def confirm_restore():
+            if not require_game_closed():
                 return
-            deleted, failed = [], []
-            for aid in checked:
-                if core.delete_vpk(state["l4d2"], aid, log=debug_log):
-                    deleted.append(aid)
-                    state["favs"].discard(aid)
-                else:
-                    failed.append(aid)
-            if deleted:
-                core.save_json(_cfg_path("favs.json"), sorted(state["favs"]))
-                idset = set(deleted)
-                state["addons"] = [a for a in state["addons"]
-                                   if a["id"] not in idset]
-            state["selected_ids"].difference_update(checked)
-            state["preview_id"] = None
-            hide_card()
-            refresh_list()
-            if deleted:
-                notify("%s borrado%s de addons/workshop/." % (
-                    _quant(len(deleted), "VPK", "VPKs"),
-                    "" if len(deleted) == 1 else "s"), "ok")
-            if failed:
-                notify("No se pudo borrar: %s. Cierre el juego si está abierto." % (
-                    ", ".join(failed)), "err")
+            save_last_config("Antes de restaurar original")
+            close_dlg()
+            progress = show_progress(
+                "Restaurando original...",
+                "Revirtiendo cambios del loader de forma segura.",
+            )
 
-        list_height = min(300, max(90, 44 * min(len(rows), 8)))
-        preview_panel = ft.Container(
-            content=ft.Stack(
-                [
-                    preview_img,
-                    preview_msg,
-                ],
-                width=170,
-            ),
-            width=170,
-            height=list_height + 4,
-            bgcolor=SURFACE,
-            border_radius=10,
-            alignment=ft.Alignment.CENTER,
-            padding=10,
+            async def _run_restore():
+                try:
+                    ok = await asyncio.to_thread(
+                        core.restore, state["l4d2"], debug_log)
+                except Exception as ex:
+                    ok = False
+                    dbg("restore async ERR %r" % ex)
+                if state["_closing"]:
+                    return
+                close_progress(progress)
+                if not ok:
+                    notify("No se pudo completar la restauración. No se tocaron "
+                           "archivos ajenos; revise el registro de depuración.",
+                           "err")
+                    return
+                state["selected_ids"].clear()
+                state["preview_id"] = None
+                set_pending_cleanup(set())
+                sidebar_holder.content = build_sidebar()
+                refresh_list(sync_active=True)
+                notify("L4D2 fue restaurado al estado anterior al loader.", "ok")
+
+            try:
+                track_task(page.run_task(_run_restore))
+            except Exception as ex:
+                dbg("restore task ERR %r" % ex)
+                close_progress(progress)
+                notify("No se pudo completar la restauración.", "err")
+
+        cnt = confirm_dialog_content(
+            ft.Icons.RESTORE,
+            "Restaurar configuración original",
+            "L4D2 volverá al estado previo a los cambios del loader.",
+            [
+                "Se restaurará gameinfo.txt desde el respaldo seguro.",
+                "Se revertirá la visión de infectado modificada por el loader.",
+                "Se eliminarán únicamente copias de mods creadas por el loader.",
+            ],
+            note=("Los VPK de Workshop, mods externos y cambios ajenos al "
+                  "programa se conservarán."),
+            width=500,
+            color=DANGER,
         )
-        card = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Text("Limpiar VPKs", size=16,
-                                    weight=ft.FontWeight.BOLD, color=TEXT),
-                            ft.Container(expand=True),
-                            ft.TextButton("CERRAR",
-                                          on_click=lambda ev: hide_card(),
-                                          style=ft.ButtonStyle(
-                                              color=TEXT_DIM,
-                                              text_style=ft.TextStyle(size=12))),
-                        ],
-                        spacing=8,
-                    ),
-                    ft.Text(
-                        "Marque los VPKs que ya no usa (desuscritos del "
-                        "workshop). Si están ACTIVO, también se quitan de "
-                        "gameinfo.txt. Al volver a suscribirse, Steam los "
-                        "descarga de nuevo.",
-                        size=11, color=TEXT_DIM, max_lines=3,
-                        overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Container(height=2),
-                    ft.Row(
-                        [
-                            ft.ListView(rows, height=list_height, spacing=4,
-                                        scroll=ft.ScrollMode.AUTO, expand=True),
-                            preview_panel,
-                        ],
-                        spacing=10,
-                        vertical_alignment=ft.CrossAxisAlignment.START,
-                    ),
-                    ft.Container(height=4),
-                    ft.FilledButton(
-                        "BORRAR SELECCIONADOS (%d)" % len(checked),
-                        on_click=lambda ev: confirm_cleanup(),
-                        style=ft.ButtonStyle(bgcolor=DANGER, color=BG,
-                                             shape=ft.RoundedRectangleBorder(radius=8))),
-                ],
-                spacing=8,
-                tight=True,
-            ),
-            width=610,
-            bgcolor=SURFACE_2,
-            border_radius=16,
-            padding=18,
-            border=ft.Border.all(1, BORDER),
+
+        dlg = ft.AlertDialog(
+            content=cnt,
+            actions=[
+                ft.TextButton("Cancelar",
+                              on_click=lambda ev: close_dialog_anim(cnt)),
+                ft.FilledButton(
+                    "Restaurar original",
+                    icon=ft.Icons.RESTORE,
+                    on_click=lambda ev: confirm_restore(),
+                    style=ft.ButtonStyle(
+                        bgcolor=DANGER, color=BG,
+                        shape=ft.RoundedRectangleBorder(radius=8))),
+            ],
+            modal=True,
         )
-        show_card(card)
+        show_dlg(dlg)
+        animate_display(cnt)
 
-    def do_restore():
-        if not state["l4d2"]:
-            return
-        if not require_game_closed():
-            return
-        if not state["active_ids"]:
-            notify("No hay addons activos para quitar.", "warn")
-            return
-        core.restore(state["l4d2"], log=debug_log)
-        state["selected_ids"].clear()
-        state["preview_id"] = None
-        refresh_list()
-        notify("Juego restaurado a su estado original.", "ok")
-
-    header_row = ft.Row(
-        [
-            ft.Column(
-                [
-                    view_title,
-                    ft.Row([status_dot, status_text], spacing=6),
-                    counts_text,
-                ],
-                spacing=3,
+    header_layers = []
+    if os.path.isfile(L4D2_BACKGROUND):
+        header_layers.append(ft.Image(src=L4D2_BACKGROUND, width=1200,
+                                      height=154, fit=ft.BoxFit.COVER,
+                                      opacity=0.48))
+    header_layers.extend([
+        ft.Container(
+            width=1200,
+            height=154,
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment(-1, 0),
+                end=ft.Alignment(1, 0),
+                colors=["#0C0F16F5", "#0C0F16C9", "#0C0F1680"],
             ),
-            ft.Container(expand=True),
-            header_actions,
-        ],
+        ),
+        ft.Container(
+            width=1200,
+            height=154,
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment(0, -1),
+                end=ft.Alignment(0, 1),
+                colors=["#0B101A18", "#080B12B8", "#070A10FA"],
+            ),
+        ),
+        ft.Container(
+            content=ft.Row(
+                [
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                view_title,
+                                ft.Row(
+                                    [
+                                        ft.Icon(getattr(ft.Icons, "SPORTS_ESPORTS",
+                                                ft.Icons.INFO_OUTLINE),
+                                                size=17, color=TEXT),
+                                        ft.Text("Left 4 Dead 2", size=14,
+                                                color=TEXT,
+                                                weight=ft.FontWeight.W_700),
+                                    ],
+                                    spacing=7,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                counts_text,
+                            ],
+                            spacing=6,
+                        ),
+                        padding=ft.Padding.only(left=0, right=18, top=4,
+                                                bottom=6),
+                        gradient=ft.LinearGradient(
+                            begin=ft.Alignment(-1, 0),
+                            end=ft.Alignment(1, 0),
+                            colors=["#05070DCF", "#05070D72", "#05070D00"],
+                        ),
+                        border_radius=10,
+                        expand=True,
+                    ),
+                    header_actions,
+                ],
+                vertical_alignment=ft.CrossAxisAlignment.END,
+            ),
+            padding=ft.Padding.only(left=22, right=22, top=22, bottom=18),
+        ),
+    ])
+
+    header_row = ft.Container(
+        content=ft.Stack(header_layers, height=154),
+        height=154,
+        border=ft.Border.only(bottom=ft.BorderSide(1, BORDER)),
+        clip_behavior=ft.ClipBehavior.HARD_EDGE,
+    )
+
+    sort_group = ft.Container(
+        content=ft.Row(
+            [
+                ft.Text("Ordenar", size=12, color=TEXT_DIM),
+                sort_btn,
+            ],
+            spacing=6,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        bgcolor=SURFACE,
+        border=ft.Border.all(1, BORDER),
+        border_radius=10,
+        padding=ft.Padding.only(left=10, right=4, top=2, bottom=2),
+    )
+
+    filters_row = ft.Row(
+        [chips_row],
+        spacing=8,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
     list_toolbar = ft.Row(
-        [ft.Container(expand=True), sort_btn, desmar_btn],
+        [sort_group, ft.Container(expand=True), desmar_btn],
         spacing=8,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
     center_column = ft.Column(
         [
             header_row,
-            ft.Container(height=6),
-            search_field,
-            ft.Container(height=6),
-            list_toolbar,
-            ft.Container(height=2),
-            chips_row,
-            ft.Container(height=2),
-            ft.Container(height=4),
-            list_view,
+            pending_cleanup_banner,
+            ft.Container(
+                content=search_field,
+                padding=ft.Padding.only(left=18, right=18, top=14),
+            ),
+            ft.Container(
+                content=filters_row,
+                padding=ft.Padding.only(left=18, right=18, top=8, bottom=10),
+            ),
+            ft.Container(
+                content=list_toolbar,
+                padding=ft.Padding.only(left=18, right=18, bottom=10),
+            ),
+            ft.Container(
+                content=list_view,
+                padding=ft.Padding.only(left=18, right=8, bottom=8),
+                expand=True,
+            ),
         ],
         spacing=0,
         expand=True,
+    )
+
+    def detail_action_button(text, icon, on_click, primary=False):
+        return ft.TextButton(
+            text,
+            icon=icon,
+            on_click=on_click,
+            icon_color=ACCENT if primary else TEXT_DIM,
+            disabled=True,
+            style=ft.ButtonStyle(
+                color=TEXT if not primary else BG,
+                bgcolor=ACCENT if primary else SURFACE_2,
+                padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+                shape=ft.RoundedRectangleBorder(radius=8),
+            ),
+        )
+
+    workshop_button_ref[0] = detail_action_button(
+        "Workshop",
+        (ft.Icons.OPEN_IN_NEW if hasattr(ft.Icons, "OPEN_IN_NEW")
+         else ft.Icons.LINK),
+        open_steam,
+    )
+    folder_button_ref[0] = detail_action_button(
+        "Abrir carpeta",
+        (ft.Icons.FOLDER_OPEN if hasattr(ft.Icons, "FOLDER_OPEN")
+         else ft.Icons.FOLDER),
+        open_folder,
+    )
+    copy_id_button_ref[0] = detail_action_button(
+        "Copiar ID",
+        getattr(ft.Icons, "CONTENT_COPY", ft.Icons.COPY),
+        copy_addon_id,
+    )
+
+    detail_status_ref[0] = ft.Container(
+        content=ft.Row(
+            [
+                ft.Icon(ft.Icons.KEY, size=15, color=TEXT_DIM),
+                ft.Text("Inactivo", size=12, color=TEXT,
+                        weight=ft.FontWeight.W_700),
+            ],
+            spacing=7,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        bgcolor=SURFACE_2,
+        border=ft.Border.all(1, BORDER),
+        border_radius=8,
+        padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+    )
+    detail_fav_ref[0] = ft.Container(
+        content=ft.Text("☆", size=20, color=TEXT_DIM),
+        width=38,
+        height=38,
+        bgcolor=SURFACE_2,
+        border=ft.Border.all(1, BORDER),
+        border_radius=8,
+        alignment=ft.Alignment.CENTER,
+        ink=True,
+        tooltip="Marcar favorito",
+        on_click=lambda e: (toggle_fav(displayed_preview_addon())
+                            if displayed_preview_addon() else None),
     )
 
     preview_panel = ft.Container(
         content=ft.Column(
             [
                 main_pane["img"],
-                ft.Container(height=10),
+                ft.Container(height=8),
                 main_pane["title"],
                 main_pane["meta"],
-                ft.Container(height=8),
-                main_pane["desc"],
-                ft.Container(height=4),
+                ft.Container(height=6),
                 ft.Row(
                     [
-                        ft.TextButton(
-                            "Workshop", on_click=open_steam,
-                            icon=(ft.Icons.OPEN_IN_NEW
-                                  if hasattr(ft.Icons, "OPEN_IN_NEW")
-                                  else "\u2197"),
-                            icon_color=TEXT_DIM,
-                            style=ft.ButtonStyle(color=TEXT_DIM)),
-                        ft.TextButton(
-                            "Carpeta", on_click=open_folder,
-                            icon=(ft.Icons.FOLDER_OPEN
-                                  if hasattr(ft.Icons, "FOLDER_OPEN")
-                                  else "\u25A0"),
-                            icon_color=TEXT_DIM,
-                            style=ft.ButtonStyle(color=TEXT_DIM)),
+                        detail_status_ref[0],
+                        ft.Container(expand=True),
+                        detail_fav_ref[0],
                     ],
-                    spacing=4,
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Container(
+                                content=ft.Text("Información", size=12,
+                                                color=ACCENT,
+                                                weight=ft.FontWeight.W_700),
+                                border=ft.Border.only(
+                                    bottom=ft.BorderSide(2, ACCENT)),
+                                padding=ft.Padding.only(bottom=8),
+                            ),
+                            ft.Text("Archivos", size=12, color=TEXT_DIM),
+                            ft.Text("Capturas", size=12, color=TEXT_DIM),
+                        ],
+                        spacing=18,
+                    ),
+                    padding=ft.Padding.only(top=8),
+                ),
+                ft.Divider(color=BORDER, height=1),
+                ft.Text("Descripción", size=12, color=TEXT,
+                        weight=ft.FontWeight.W_700),
+                main_pane["desc"],
+                ft.Container(height=2),
+                workshop_button_ref[0],
+                folder_button_ref[0],
+                copy_id_button_ref[0],
             ],
+            spacing=7,
         ),
-        width=280, padding=16, bgcolor=SURFACE, border_radius=12,
+        width=286,
+        padding=12,
+        bgcolor="#10131A",
+        border=ft.Border.all(1, BORDER),
+        border_radius=8,
     )
 
     center_wrap = ft.Container(
         content=ft.Row([center_column, preview_panel], expand=True,
-                       spacing=8,
+                       spacing=12,
                        vertical_alignment=ft.CrossAxisAlignment.START),
-        animate_opacity=ft.Animation(220, "easeOut"),
         expand=True,
+    )
+
+    bottom_bar = ft.Container(
+        content=ft.Row(
+            [
+                ft.Row(
+                    [
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.CHECK, size=13,
+                                            color=BG),
+                            width=19,
+                            height=19,
+                            bgcolor=ACCENT,
+                            border_radius=10,
+                            alignment=ft.Alignment.CENTER,
+                        ),
+                        footer_left_text,
+                        ft.Container(width=12),
+                        footer_selection_text,
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Container(expand=True),
+                ft.Row([status_dot, status_text], spacing=7,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ],
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        height=34,
+        padding=ft.Padding.symmetric(horizontal=18, vertical=6),
+        bgcolor="#0D1118",
+        border=ft.Border.only(top=ft.BorderSide(1, BORDER)),
     )
 
     main_row = ft.Row(
         [
             sidebar_holder,
             ft.Container(
-                content=ft.Column([center_wrap], expand=True),
-                padding=16, expand=True,
+                content=ft.Column([center_wrap, bottom_bar], expand=True,
+                                  spacing=0),
+                padding=0, expand=True,
             ),
         ],
         expand=True, spacing=0,
     )
 
-    page.add(ft.Stack([main_row, toast_wrapper, modal_wrap], expand=True))
+    def shutdown(e=None):
+        if state["_closing"]:
+            return
+        state["_closing"] = True
+        state["_load_generation"] += 1
+        main_pane["generation"] += 1
+        for future in list(state["_tasks"]):
+            try:
+                future.cancel()
+            except Exception:
+                pass
+        state["_tasks"].clear()
+
+    def apply_responsive_layout():
+        width = float(getattr(page, "width", None) or DEFAULT_WINDOW_WIDTH)
+        compact = width < 1000
+        sidebar_holder.padding = 14 if compact else 18
+        sidebar_holder.content.width = 172 if compact else 190
+        preview_panel.width = 268 if compact else 286
+
+    def resize_changed(e=None):
+        pending = state.get("_resize_task")
+        if pending:
+            pending.cancel()
+
+        async def _resize():
+            try:
+                await asyncio.sleep(0.08)
+            except asyncio.CancelledError:
+                return
+            if not state["_closing"]:
+                apply_responsive_layout()
+                safe_update()
+
+        try:
+            state["_resize_task"] = track_task(page.run_task(_resize))
+        except Exception:
+            apply_responsive_layout()
+
+    def window_event(e):
+        if getattr(e, "type", None) == ft.WindowEventType.CLOSE:
+            shutdown()
+        elif getattr(e, "type", None) in (
+                ft.WindowEventType.RESIZE, ft.WindowEventType.RESIZED):
+            resize_changed()
+
+    page.on_resize = resize_changed
+    try:
+        page.window.on_event = window_event
+    except Exception:
+        pass
 
     header_actions.content = build_header_actions()
+    page.add(ft.Stack([main_row, toast_wrapper, modal_wrap], expand=True))
+    apply_responsive_layout()
+    ui_later(0.05, lambda: (apply_responsive_layout(), safe_update()))
     load_addons()
-    threading.Thread(target=watch_workshop, daemon=True).start()
+    try:
+        state["_watch_task"] = track_task(page.run_task(watch_workshop))
+    except Exception as ex:
+        dbg("watch task ERR %r" % ex)
 
 
 if __name__ == "__main__":
