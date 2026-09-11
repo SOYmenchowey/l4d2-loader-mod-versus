@@ -9,7 +9,6 @@ a = Analysis(
         ('icono.png', '.'),
         ('L4D2 BACKGROUND.png', '.'),
         ('l4d2_core.py', '.'),
-        ('flet-windows.zip', 'flet_desktop/app'),
     ],
     hiddenimports=[],
     hookspath=[],
