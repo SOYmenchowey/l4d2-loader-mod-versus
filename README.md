@@ -4,6 +4,16 @@ Herramienta para gestionar addons de **Left 4 Dead 2** sin mover archivos a mano
 
 Selecciona tus mods para Versus, activa la configuración y pulsa **JUGAR**.
 
+## Vista previa
+
+| Mods | Glows |
+| --- | --- |
+| ![Vista de mods](assets/screenshots/mods.png) | ![Editor de glows](assets/screenshots/glows.png) |
+
+| Quitar addons | Diagnóstico |
+| --- | --- |
+| ![Modal para quitar addons](assets/screenshots/remove-addons.png) | ![Diagnóstico del loader](assets/screenshots/diagnostics.png) |
+
 ## Características
 
 * **Explorador de addons del Workshop**: muestra títulos, descripciones e imágenes de preview usando la API pública de Steam con caché local.
