@@ -11,3 +11,4 @@ build/
 flet-windows.zip
 pyinstaller_build.log
 PLAN.txt
+assets/glows/references/

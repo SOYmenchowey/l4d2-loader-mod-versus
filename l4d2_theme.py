@@ -40,6 +40,7 @@ def asset_path(name):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
 
 
-ICONO = asset_path("icono.png")
-L4D2_BACKGROUND = asset_path("L4D2 BACKGROUND.png")
+ICONO = asset_path(os.path.join("assets", "icons", "icono.png"))
+L4D2_BACKGROUND = asset_path(
+    os.path.join("assets", "backgrounds", "L4D2 BACKGROUND.png"))
 TIKTOK_URL = "https://www.tiktok.com/@tokyossz"

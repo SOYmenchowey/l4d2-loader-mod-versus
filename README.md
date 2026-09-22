@@ -13,9 +13,11 @@ Elige los mods que quieres utilizar en tu partida de Versus, actívalos y pulsa 
 * 🗂️ **Categorías automáticas**: Skins / Armas / Sonido / UI / Otro, además de un filtro dedicado para VScripts.
 * ⭐ **Favoritos y presets**: guarda combinaciones de addons activos para reutilizarlas rápidamente.
 * 🔗 **Dependencias**: detecta y sugiere requisitos entre addons, incluyendo dependencias transitivas y protección contra ciclos.
+* 🧭 **Ruta manual de L4D2**: permite seleccionar la carpeta del juego o una Steam Library cuando Steam está instalado en otro disco.
+* ✨ **Editor de glows**: personaliza colores de sobrevivientes, infectados, objetos y witch desde la interfaz, escribiendo un cfg gestionado por el loader.
 * 👁️ **Visión de infectado**: permite quitar o restaurar el tinte naranja/azul de los infectados.
 * 🧹 **Limpieza automática**: al desuscribirse de un addon, retira su copia administrada cuando L4D2 se cierra y permite restaurar el `gameinfo.txt` original mediante backups automáticos.
-* ↩️ **Restauración completa**: devuelve `gameinfo.txt`, la visión de infectado y las copias de mods al estado anterior al loader, conservando archivos y ediciones externas.
+* ↩️ **Restauración completa**: devuelve `gameinfo.txt`, glows, visión de infectado y copias de mods al estado anterior al loader, conservando archivos y ediciones externas.
 * 🔍 **Watcher automático**: detecta cuando Steam descarga o elimina VPKs y actualiza la lista sin reiniciar la aplicación.
 * 🛡️ **Guard de juego abierto**: bloquea modificaciones mientras Left 4 Dead 2 está ejecutándose.
 
@@ -59,10 +61,13 @@ pyinstaller --clean "L4D2_Mod_Loader.spec"
 
 El ejecutable generado aparecerá en la carpeta `dist/`.
 
+> Nota: `dist/`, `build/`, `.flet/`, logs y archivos `.zip` locales están ignorados por Git. El repositorio contiene el código fuente y assets necesarios para compilar, no el ejecutable generado.
+
 ## Notas
 
 * Si Left 4 Dead 2 está instalado dentro de `Program Files`, ejecuta la aplicación **como administrador** para permitir modificaciones en `gameinfo.txt`.
 * El programa crea backups automáticos antes de modificar `gameinfo.txt`.
+* Los glows se guardan en `left4dead2/cfg/l4d2_mod_loader_glows.cfg` y se enlazan desde un bloque gestionado en `autoexec.cfg`. Si `autoexec.cfg` no existe, el loader lo crea.
 * Los addons de tipo VSCRIPT pueden no funcionar correctamente mediante este método de activación.
 * La información e imágenes de los addons del Workshop pueden requerir conexión a Internet cuando todavía no están disponibles en la caché local.
 * El programa bloquea las modificaciones mientras Left 4 Dead 2 está abierto para evitar conflictos con los archivos del juego.

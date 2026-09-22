@@ -1,20 +1,31 @@
 import asyncio
 import glob
-import json
 import os
 import time
 
 import flet as ft
 
 import l4d2_core as core
+import l4d2_detail_panel
 import l4d2_diagnostics as diagnostics
+import l4d2_glows
+import l4d2_glows_view
+import l4d2_sidebar
 import l4d2_state
 import l4d2_ui as ui
+from l4d2_app_config import (
+    DEFAULT_WINDOW_HEIGHT,
+    DEFAULT_WINDOW_WIDTH,
+    MIN_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH,
+    cfg_path as _cfg_path,
+    dbg,
+    debug_log,
+)
 from l4d2_clipboard import copy_text_to_clipboard
 from l4d2_controls import (
     ModRow,
     dialog_row,
-    fit_image,
     make_pane,
     pane_clear,
     pane_set_img,
@@ -54,38 +65,6 @@ def _quant(n, singular, plural):
     return "%d %s" % (n, singular if n == 1 else plural)
 
 
-DEFAULT_WINDOW_WIDTH = 1152
-DEFAULT_WINDOW_HEIGHT = 944
-MIN_WINDOW_WIDTH = 1040
-MIN_WINDOW_HEIGHT = 760
-
-
-def _cfg_path(name):
-    d = os.path.join(os.getenv("LOCALAPPDATA") or os.getcwd(), "L4D2ModLoader")
-    try:
-        os.makedirs(d, exist_ok=True)
-    except Exception:
-        pass
-    return os.path.join(d, name)
-
-
-def debug_log(msg):
-    print(msg)
-    dbg("core: " + str(msg))
-
-
-def dbg(msg):
-    try:
-        base = os.getenv("LOCALAPPDATA") or os.getcwd()
-        d = os.path.join(base, "L4D2ModLoader")
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "debug.log"), "a",
-                  encoding="utf-8") as f:
-            f.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), msg))
-    except Exception:
-        pass
-
-
 def main(page: ft.Page):
     page.title = "L4D2 Mod Loader"
     page.bgcolor = BG
@@ -115,6 +94,16 @@ def main(page: ft.Page):
     page.theme = ft.Theme(font_family="Segoe UI")
 
     state = l4d2_state.create_initial_state(_cfg_path)
+    state["glow_colors"] = l4d2_glows.load_colors()
+    state["glow_dirty"] = False
+    state["glow_applied"] = False
+    state["glow_preset"] = "Personalizado"
+    state["selected_glow_key"] = "survivor_health_high"
+    folder_picker = ft.FilePicker()
+    try:
+        page.services.append(folder_picker)
+    except Exception:
+        pass
 
     def track_task(future):
         state["_tasks"].add(future)
@@ -662,36 +651,6 @@ def main(page: ft.Page):
                                 else ft.FontWeight.NORMAL)
         refresh_list()
 
-    def nav_item(text, view_name, selected, badge=0, icon=None):
-        content = ft.Row(
-            [
-                ft.Icon(icon or ft.Icons.CIRCLE_OUTLINED, size=17,
-                        color=TEXT if selected else TEXT_DIM),
-                ft.Text(text, size=13,
-                        color=TEXT if selected else TEXT_DIM,
-                        weight=(ft.FontWeight.W_600 if selected
-                                else ft.FontWeight.NORMAL)),
-            ],
-            spacing=8,
-        )
-        if badge:
-            content.controls.append(ft.Container(
-                content=ft.Text(str(badge), size=10,
-                                weight=ft.FontWeight.W_700, color=TEXT),
-                bgcolor=DANGER,
-                padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-                border_radius=10,
-            ))
-        return ft.Container(
-            content=content,
-            padding=ft.Padding.symmetric(horizontal=14, vertical=11),
-            border_radius=8,
-            bgcolor=SURFACE_2 if selected else None,
-            border=(ft.Border.all(1, "#2F3A46") if selected else None),
-            on_click=lambda e, v=view_name: switch_view(v),
-            ink=True,
-        )
-
     def do_play(e):
         try:
             os.startfile("steam://rungameid/550")
@@ -768,86 +727,9 @@ def main(page: ft.Page):
             detail_fav_ref[0].content.value = "★" if is_fav else "☆"
             detail_fav_ref[0].content.color = AMBER if is_fav else TEXT_DIM
 
-    tiktok_footer = ft.Container(
-        content=ft.Text("made by @tokyossz", size=13, color=TEXT_DIM,
-                        italic=True),
-        padding=ft.Padding.symmetric(horizontal=14, vertical=6),
-        on_click=open_tiktok,
-        tooltip=TIKTOK_URL,
-        ink=True,
-    )
-
     def collect_health_snapshot(refresh_running=False):
         return diagnostics.collect_health_snapshot(
             state, _cfg_path, refresh_running=refresh_running, log=dbg)
-
-    def health_row(label, ok, warn_text=None):
-        color = ACCENT if ok else AMBER
-        value = "OK" if ok else (warn_text or "Revisar")
-        return ft.Row(
-            [
-                ft.Container(width=7, height=7, border_radius=4,
-                             bgcolor=color),
-                ft.Text(label, size=11, color=TEXT_DIM, expand=True,
-                        max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                ft.Text(value, size=10, color=color,
-                        weight=ft.FontWeight.W_700),
-            ],
-            spacing=7,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        )
-
-    def build_health_card():
-        snap = collect_health_snapshot()
-        warnings = ui.diagnostic_warnings(snap)
-        severe = (
-            not snap["game_found"] or snap["game_running"] or
-            (snap["game_found"] and not snap["gameinfo_writable"])
-        )
-        badge_color = DANGER if severe else (AMBER if warnings else ACCENT)
-        badge_text = "Revisar" if warnings else "Correcto"
-
-        return ft.Container(
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Text("Salud", size=12, color=TEXT,
-                                    weight=ft.FontWeight.W_700),
-                            ft.Container(expand=True),
-                            ft.Container(
-                                content=ft.Text(
-                                    badge_text, size=9, color=badge_color,
-                                    weight=ft.FontWeight.W_700),
-                                bgcolor=(DANGER_SOFT if severe else
-                                         AMBER_SOFT if warnings else
-                                         ACCENT_SOFT),
-                                border=ft.Border.all(1, badge_color),
-                                border_radius=6,
-                                padding=ft.Padding.symmetric(
-                                    horizontal=6, vertical=2),
-                            ),
-                        ],
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    ),
-                    health_row("L4D2", snap["game_found"], "No"),
-                    health_row("Juego", not snap["game_running"], "Abierto"),
-                    health_row("gameinfo", snap["gameinfo_writable"], "Bloq."),
-                    health_row("Workshop", snap["workshop_exists"], "No"),
-                    health_row(
-                        "Limpieza",
-                        not snap["pending_cleanup_count"],
-                        str(snap["pending_cleanup_count"]),
-                    ),
-                ],
-                spacing=7,
-                tight=True,
-            ),
-            bgcolor="#121218",
-            border=ft.Border.all(1, BORDER),
-            border_radius=8,
-            padding=10,
-        )
 
     def do_restore_last_config(e=None):
         if not state["l4d2"]:
@@ -1317,96 +1199,18 @@ def main(page: ft.Page):
         page.update()
 
     def build_sidebar():
-        logo = ft.Container(
-            content=ft.Column(
-                [
-                    (fit_image(ICONO, 104, 104) if os.path.isfile(ICONO)
-                     else ft.Text("L4D2", size=24, weight=ft.FontWeight.BOLD,
-                                  color=ACCENT)),
-                    ft.Text("L4D2", size=24, weight=ft.FontWeight.W_800,
-                            color=TEXT),
-                    ft.Text("MOD LOADER", size=11, color=TEXT_DIM,
-                            weight=ft.FontWeight.W_600),
-                ],
-                spacing=0,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            padding=ft.Padding.only(top=8, bottom=10),
-            alignment=ft.Alignment.CENTER,
-        )
-        vision_off = bool(state["l4d2"]) and \
-            core.vision_state(state["l4d2"]) == "off"
-
-        def _section(text):
-            return ft.Container(
-                content=ft.Text(text, size=11, color=TEXT_DIM,
-                                weight=ft.FontWeight.W_600),
-                padding=ft.Padding.only(left=14, top=8, bottom=2),
-            )
-
-        def _action(text, color, icon, on_click, subtle=False):
-            return ft.Container(
-                content=ft.Row(
-                    [
-                        ft.Icon(icon, size=17, color=color),
-                        ft.Text(text, size=12, color=color, max_lines=2,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                                expand=True),
-                    ],
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                padding=ft.Padding.symmetric(horizontal=14, vertical=10),
-                border_radius=8,
-                bgcolor=SURFACE_2 if not subtle else None,
-                border=ft.Border.all(1, BORDER) if not subtle else None,
-                on_click=on_click,
-                ink=True,
-            )
-
-        return ft.Column(
-            [
-                logo,
-                ft.FilledButton(
-                    "JUGAR",
-                    icon=(ft.Icons.PLAY_ARROW if hasattr(ft.Icons, "PLAY_ARROW")
-                          else "\u25B6"),
-                    on_click=do_play,
-                    style=ft.ButtonStyle(bgcolor=ACCENT, color=BG,
-                                         shape=ft.RoundedRectangleBorder(radius=8)),
-                ),
-                ft.Container(height=10),
-                nav_item("Mods", "mods", state["view"] == "mods",
-                         icon=getattr(ft.Icons, "EXTENSION",
-                                      ft.Icons.VIEW_MODULE)),
-                nav_item("Activos", "activos", state["view"] == "activos",
-                         icon=getattr(ft.Icons, "INVENTORY_2_OUTLINED",
-                                      ft.Icons.CHECK_BOX_OUTLINE_BLANK)),
-                ft.Container(height=8),
-                ft.Divider(color=BORDER, height=1),
-                _section("HERRAMIENTAS"),
-                _action("Diagnóstico", TEXT, getattr(
-                    ft.Icons, "FACT_CHECK_OUTLINED", ft.Icons.INFO_OUTLINE),
-                    open_diagnostic, subtle=True),
-                _action("Última config", TEXT, ft.Icons.RESTORE,
-                        do_restore_last_config, subtle=True),
-                ft.Container(height=6),
-                ft.Divider(color=BORDER, height=1),
-                _section("SISTEMA"),
-                build_health_card(),
-                ft.Container(height=6),
-                ft.Divider(color=BORDER, height=1),
-                _action("Restaurar original", DANGER, ft.Icons.RESTORE,
-                        lambda e: do_restore(), subtle=True),
-                _action("Restaurar Visión de Infectado" if vision_off
-                        else "Quitar Visión de Infectado",
-                        ACCENT if vision_off else DANGER,
-                        ft.Icons.VISIBILITY if vision_off else ft.Icons.VISIBILITY_OFF,
-                        toggle_vision, subtle=True),
-                ft.Container(expand=True),
-                tiktok_footer,
-            ],
-            spacing=6, width=190,
+        return l4d2_sidebar.build_sidebar(
+            state=state,
+            health_snapshot=collect_health_snapshot(),
+            icon_path=ICONO,
+            on_play=do_play,
+            on_nav=lambda view: switch_view(view),
+            on_diagnostic=open_diagnostic,
+            on_restore_last=do_restore_last_config,
+            on_restore_original=lambda e: do_restore(),
+            on_toggle_vision=toggle_vision,
+            on_tiktok=open_tiktok,
+            tiktok_url=TIKTOK_URL,
         )
 
     sidebar_holder = ft.Container(content=build_sidebar(), padding=18,
@@ -1417,16 +1221,52 @@ def main(page: ft.Page):
             return
         dbg("switch_view %s" % v)
         state["view"] = v
+        state["_render_signature"] = None
         state["preview_id"] = None
         sidebar_holder.content = build_sidebar()
-        view_title.value = "Addons activos" if v == "activos" else "Mods en Versus"
+        titles = {
+            "mods": "Mods en Versus",
+            "activos": "Addons activos",
+            "glows": "Glows",
+        }
+        view_title.value = titles.get(v, "Mods en Versus")
         header_actions.content = build_header_actions()
-        list_toolbar.visible = v == "mods"
         refresh_list()
 
     enable_button_ref = [None]
     remove_button_ref = [None]
     remove_all_button_ref = [None]
+
+    def choose_l4d2_path(e=None):
+        async def _pick():
+            initial = state.get("manual_l4d2_path") or state.get("l4d2") or ""
+            try:
+                result = folder_picker.get_directory_path(
+                    dialog_title=("Selecciona Left 4 Dead 2, left4dead2, "
+                                  "addons, workshop o una Steam Library"),
+                    initial_directory=initial if os.path.isdir(initial) else None,
+                )
+                selected = await result if hasattr(result, "__await__") else result
+            except Exception as ex:
+                dbg("folder picker ERR %r" % ex)
+                notify("No se pudo abrir el selector de carpeta.", "err")
+                return
+            if not selected:
+                return
+            resolved = core.resolve_l4d2_path(selected)
+            if not resolved:
+                notify("Esa carpeta no parece contener Left 4 Dead 2.", "err")
+                return
+            state["manual_l4d2_path"] = resolved
+            core.save_json(_cfg_path("game_path.json"), {"path": resolved})
+            notify("Ruta de L4D2 guardada. Recargando mods...", "ok")
+            load_addons()
+
+        try:
+            track_task(page.run_task(_pick))
+        except Exception as ex:
+            dbg("folder picker task ERR %r" % ex)
+            notify("No se pudo abrir el selector de carpeta.", "err")
 
     def build_header_actions():
         style = ft.ButtonStyle(bgcolor=ACCENT, color=BG,
@@ -1442,6 +1282,8 @@ def main(page: ft.Page):
             ft.ControlState.DEFAULT: BG,
             ft.ControlState.DISABLED: TEXT_DIM,
         }
+        if state["view"] == "glows":
+            return ft.Row([], spacing=8)
         if state["view"] == "activos":
             remove_button_ref[0] = ft.FilledButton(
                 "Quitar addon", on_click=do_quitar_addon,
@@ -1470,6 +1312,24 @@ def main(page: ft.Page):
         )
         return ft.Row(
             [
+                ft.Container(
+                    content=ft.TextButton(
+                        "Buscar ruta",
+                        icon=(ft.Icons.FOLDER_OPEN if hasattr(
+                            ft.Icons, "FOLDER_OPEN") else ft.Icons.FOLDER),
+                        on_click=choose_l4d2_path,
+                        style=ft.ButtonStyle(
+                            color=TEXT,
+                            text_style=ft.TextStyle(size=12),
+                            padding=ft.Padding.symmetric(
+                                horizontal=10, vertical=6),
+                        ),
+                    ),
+                    bgcolor=SURFACE_2,
+                    border_radius=8,
+                    border=ft.Border.all(1, BORDER),
+                    ink=True,
+                ),
                 ft.Container(
                     content=ft.TextButton("Presets", on_click=open_presets,
                                           style=ft.ButtonStyle(
@@ -1506,7 +1366,8 @@ def main(page: ft.Page):
                 close_progress(progress)
 
         async def _load():
-            l4d2 = await asyncio.to_thread(core.find_l4d2)
+            l4d2 = await asyncio.to_thread(
+                core.find_l4d2, state.get("manual_l4d2_path"))
             if not ui.request_is_current(
                     generation, state["_load_generation"], state["_closing"]):
                 finish_load_progress()
@@ -1523,6 +1384,7 @@ def main(page: ft.Page):
                        "err")
                 return
 
+            state["glow_applied"] = l4d2_glows.is_applied(l4d2)
             status_dot.bgcolor = ACCENT
             status_text.value = os.path.basename(l4d2)
             status_text.tooltip = l4d2
@@ -1730,6 +1592,16 @@ def main(page: ft.Page):
     def refresh_list(sync_active=False):
         dbg("refresh_list")
 
+        if state["view"] == "glows":
+            render_glows_view()
+            safe_update()
+            return
+
+        search_field.visible = True
+        filters_row.visible = state["view"] == "mods"
+        list_toolbar.visible = state["view"] == "mods"
+        preview_panel.visible = True
+
         if state["l4d2"] and state["_fresh_scan"]:
             orphans_cleaned = core.cleanup_orphans(state["l4d2"], log=debug_log)
             if orphans_cleaned:
@@ -1889,6 +1761,493 @@ def main(page: ft.Page):
             return
         if progress.get("content"):
             close_dialog_anim(progress["content"])
+
+    def on_glow_color_changed(key, value):
+        state["selected_glow_key"] = key
+        state["glow_colors"][key] = value
+        state["glow_dirty"] = True
+        counts_text.value = "Glows: cambios sin aplicar"
+        footer_selection_text.value = "Glows pendientes"
+        safe_update()
+
+    def select_glow_color(key):
+        state["selected_glow_key"] = key
+        render_glows_view()
+        safe_update()
+
+    def open_glow_color_picker(key, label):
+        state["selected_glow_key"] = key
+        current = state["glow_colors"].get(
+            key, l4d2_glows.default_colors().get(key, "#FFFFFF"))
+        try:
+            current = l4d2_glows.normalize_hex(current)
+        except ValueError:
+            current = "#FFFFFF"
+        selected_value = [current]
+        preview = ft.Container(
+            width=156,
+            height=112,
+            bgcolor=current,
+            border_radius=12,
+            border=ft.Border.all(1, "#FFFFFF33"),
+            shadow=ft.BoxShadow(
+                blur_radius=20,
+                color=current + "66",
+                offset=ft.Offset(0, 0),
+            ),
+        )
+        current_chip = ft.Container(
+            width=42,
+            height=28,
+            bgcolor=current,
+            border_radius=7,
+            border=ft.Border.all(1, "#FFFFFF33"),
+        )
+        new_color_text = ft.Text(current, size=12, color=TEXT_DIM,
+                                 weight=ft.FontWeight.W_700)
+        custom_visible = [False]
+        slider_controls = []
+        slider_value_labels = []
+        hex_field = ft.TextField(
+            value=current,
+            label="HEX",
+            width=156,
+            height=44,
+            text_size=13,
+            color=TEXT,
+            bgcolor="#10131A",
+            border_color=BORDER,
+            focused_border_color=ACCENT,
+            content_padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+        )
+
+        def _apply_preview(value):
+            try:
+                normalized = l4d2_glows.normalize_hex(value)
+            except ValueError:
+                hex_field.border_color = DANGER
+                return None
+            hex_field.border_color = BORDER
+            selected_value[0] = normalized
+            preview.bgcolor = normalized
+            preview.shadow = ft.BoxShadow(
+                blur_radius=20,
+                color=normalized + "66",
+                offset=ft.Offset(0, 0),
+            )
+            new_color_text.value = normalized
+            _refresh_swatch_borders(normalized)
+            rgb_values = [int(round(v * 255))
+                          for v in l4d2_glows.hex_to_rgb_values(normalized)]
+            for slider, label_ctrl, rgb_value in zip(
+                    slider_controls, slider_value_labels, rgb_values):
+                slider.value = rgb_value
+                label_ctrl.value = str(rgb_value)
+            return normalized
+
+        def _hex_changed(e=None):
+            _apply_preview(hex_field.value)
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        hex_field.on_change = _hex_changed
+
+        swatch_values = [
+            "#FF1A1A", "#FF6200", "#FFD000", "#00FF40",
+            "#20D97B", "#00A2FF", "#4D75FF", "#9B5CFF",
+            "#FF00D4", "#D414C7", "#B2B2FF", "#FFFFFF",
+            "#8A93A3", "#242936", "#10131A", "#000000",
+        ]
+        swatch_controls = []
+        rgb = [int(round(value * 255))
+               for value in l4d2_glows.hex_to_rgb_values(current)]
+
+        def _refresh_swatch_borders(active_color):
+            for swatch, value in swatch_controls:
+                swatch.border = ft.Border.all(
+                    2, ACCENT if value == active_color else "#FFFFFF22")
+
+        def _choose_swatch(value):
+            hex_field.value = value
+            _apply_preview(value)
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        def _make_swatch(value):
+            swatch = ft.Container(
+                width=34,
+                height=34,
+                bgcolor=value,
+                border_radius=8,
+                border=ft.Border.all(
+                    2, ACCENT if value == current else "#FFFFFF22"),
+                ink=True,
+                tooltip=value,
+                on_click=lambda e, color=value: _choose_swatch(color),
+            )
+            swatch_controls.append((swatch, value))
+            return swatch
+
+        def _swatch_row(values):
+            return ft.Row(
+                [_make_swatch(value) for value in values],
+                spacing=8,
+                alignment=ft.MainAxisAlignment.START,
+            )
+
+        palette = ft.Column(
+            [
+                _swatch_row(swatch_values[:8]),
+                _swatch_row(swatch_values[8:]),
+            ],
+            spacing=8,
+        )
+
+        def _hex_from_rgb():
+            return "#%02X%02X%02X" % tuple(
+                int(round(slider.value or 0)) for slider in slider_controls)
+
+        def _slider_changed(e=None):
+            value = _hex_from_rgb()
+            hex_field.value = value
+            _apply_preview(value)
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        def _slider_row(name, value, color):
+            value_label = ft.Text(str(value), width=32, size=11,
+                                  color=TEXT_DIM,
+                                  weight=ft.FontWeight.W_700)
+            slider = ft.Slider(
+                min=0,
+                max=255,
+                value=value,
+                divisions=255,
+                label="{value}",
+                active_color=color,
+                on_change=_slider_changed,
+            )
+            slider_controls.append(slider)
+            slider_value_labels.append(value_label)
+            return ft.Row(
+                [
+                    ft.Text(name, width=18, size=12, color=TEXT_DIM,
+                            weight=ft.FontWeight.W_700),
+                    slider,
+                    value_label,
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+
+        custom_panel = ft.Container(
+            content=ft.Column(
+                [
+                    _slider_row("R", rgb[0], "#FF4D4D"),
+                    _slider_row("G", rgb[1], ACCENT),
+                    _slider_row("B", rgb[2], "#4D75FF"),
+                ],
+                spacing=0,
+            ),
+            visible=False,
+            bgcolor="#0B0E14",
+            border=ft.Border.all(1, BORDER),
+            border_radius=10,
+            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+        )
+        custom_button_label = ft.Text(
+            "Custom", size=12, color=TEXT,
+            weight=ft.FontWeight.W_700)
+
+        def _toggle_custom(e=None):
+            custom_visible[0] = not custom_visible[0]
+            custom_panel.visible = custom_visible[0]
+            custom_button_label.value = (
+                "Ocultar custom" if custom_visible[0] else "Custom")
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        custom_button = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.TUNE, size=15, color=TEXT),
+                    custom_button_label,
+                ],
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            height=34,
+            padding=ft.Padding.symmetric(horizontal=11, vertical=6),
+            bgcolor=SURFACE_2,
+            border=ft.Border.all(1, BORDER),
+            border_radius=8,
+            ink=True,
+            on_click=_toggle_custom,
+            tooltip="Ajustar con sliders RGB",
+        )
+
+        def confirm_color():
+            normalized = _apply_preview(hex_field.value)
+            if not normalized:
+                notify("Color inválido. Usa formato #RRGGBB.", "err")
+                return
+            on_glow_color_changed(key, normalized)
+            render_glows_view()
+            close_dialog_anim(cnt)
+            safe_update()
+
+        cnt = ft.Container(
+            content=ft.Column(
+                [
+                    modal_header(
+                        ft.Icons.PALETTE_OUTLINED
+                        if hasattr(ft.Icons, "PALETTE_OUTLINED")
+                        else ft.Icons.COLOR_LENS,
+                        "Elegir color",
+                        label,
+                        ACCENT,
+                    ),
+                    ft.Row(
+                        [
+                            preview,
+                            ft.Column(
+                                [
+                                    ft.Row(
+                                        [
+                                            current_chip,
+                                            ft.Column(
+                                                [
+                                                    ft.Text(
+                                                        "Actual",
+                                                        size=10,
+                                                        color=TEXT_DIM,
+                                                    ),
+                                                    ft.Text(
+                                                        current,
+                                                        size=12,
+                                                        color=TEXT,
+                                                        weight=ft.FontWeight.W_700,
+                                                    ),
+                                                ],
+                                                spacing=1,
+                                            ),
+                                        ],
+                                        spacing=10,
+                                        vertical_alignment=(
+                                            ft.CrossAxisAlignment.CENTER),
+                                    ),
+                                    hex_field,
+                                    new_color_text,
+                                ],
+                                spacing=8,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=14,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Text("Colores rápidos", size=11,
+                                                color=TEXT_DIM,
+                                                weight=ft.FontWeight.W_700),
+                                        ft.Container(expand=True),
+                                        custom_button,
+                                    ],
+                                    vertical_alignment=(
+                                        ft.CrossAxisAlignment.CENTER),
+                                ),
+                                palette,
+                                custom_panel,
+                            ],
+                            spacing=10,
+                        ),
+                        bgcolor="#10131A",
+                        border=ft.Border.all(1, BORDER),
+                        border_radius=10,
+                        padding=12,
+                    ),
+                    ft.Row(
+                        [
+                            ft.Container(expand=True),
+                            ft.TextButton(
+                                "Cancelar",
+                                on_click=lambda ev: close_dialog_anim(cnt),
+                                style=ft.ButtonStyle(
+                                    color="#A7C7FF",
+                                    padding=ft.Padding.symmetric(
+                                        horizontal=12, vertical=10),
+                                ),
+                            ),
+                            ft.FilledButton(
+                                "Usar color",
+                                icon=ft.Icons.CHECK,
+                                on_click=lambda ev: confirm_color(),
+                                style=ft.ButtonStyle(
+                                    bgcolor=ACCENT,
+                                    color=BG,
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                    padding=ft.Padding.symmetric(
+                                        horizontal=16, vertical=10),
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                spacing=16,
+                tight=True,
+            ),
+            width=460,
+            padding=20,
+            bgcolor="#24282F",
+            border_radius=18,
+        )
+        dlg = ft.AlertDialog(
+            content=cnt,
+            actions=[],
+            modal=True,
+        )
+        show_dlg(dlg)
+        animate_display(cnt)
+
+    def apply_glow_preset(name):
+        preset = l4d2_glows.PRESETS.get(name)
+        if not preset:
+            return
+        state["glow_colors"] = dict(preset)
+        state["glow_preset"] = name
+        state["glow_dirty"] = True
+        render_glows_view()
+        safe_update()
+
+    def render_glows_view():
+        search_field.visible = False
+        filters_row.visible = False
+        list_toolbar.visible = False
+        preview_panel.visible = False
+        state["_render_signature"] = None
+        counts_text.value = (
+            "Edita colores y aplica el cfg gestionado por el loader"
+        )
+        footer_selection_text.value = (
+            "Cambios sin aplicar" if state["glow_dirty"]
+            else "Glows aplicados" if state["glow_applied"]
+            else "Glows sin aplicar"
+        )
+        list_view.controls = [
+            l4d2_glows_view.build_glows_view(
+                state["glow_colors"],
+                state["glow_applied"],
+                state["glow_dirty"],
+                on_change=on_glow_color_changed,
+                on_apply=do_apply_glows,
+                on_restore=do_restore_glows,
+                on_preset=apply_glow_preset,
+                on_pick_color=open_glow_color_picker,
+                on_select_color=select_glow_color,
+                selected_key=state.get("selected_glow_key"),
+            )
+        ]
+
+    def do_apply_glows(e=None):
+        if not state["l4d2"]:
+            notify("No se encontró L4D2.", "warn")
+            return
+        if not require_game_closed():
+            return
+        try:
+            colors = l4d2_glows.normalized_colors(state["glow_colors"])
+        except ValueError as ex:
+            notify(str(ex), "err")
+            return
+        progress = show_progress(
+            "Aplicando glows...",
+            "Creando cfg y enlazándolo desde autoexec.cfg.",
+        )
+
+        async def _run():
+            try:
+                ok = await asyncio.to_thread(
+                    l4d2_glows.apply_glows,
+                    state["l4d2"],
+                    colors,
+                    state.get("glow_preset"),
+                    debug_log,
+                )
+            except Exception as ex:
+                ok = False
+                dbg("apply glows ERR %r" % ex)
+            if state["_closing"]:
+                return
+            close_progress(progress)
+            if ok:
+                state["glow_colors"] = colors
+                state["glow_dirty"] = False
+                state["glow_applied"] = True
+                render_glows_view()
+                notify("Glows aplicados. Reinicia L4D2 si estaba abierto.",
+                       "ok")
+            else:
+                notify("No se pudieron aplicar los glows.", "err")
+            safe_update()
+
+        try:
+            track_task(page.run_task(_run))
+        except Exception as ex:
+            dbg("apply glows task ERR %r" % ex)
+            close_progress(progress)
+            notify("No se pudieron aplicar los glows.", "err")
+
+    def do_restore_glows(e=None):
+        if not state["l4d2"]:
+            notify("No se encontró L4D2.", "warn")
+            return
+        if not require_game_closed():
+            return
+        progress = show_progress(
+            "Restaurando glows...",
+            "Quitando únicamente el cfg y bloque creados por el loader.",
+        )
+
+        async def _run():
+            try:
+                ok = await asyncio.to_thread(
+                    l4d2_glows.restore_glows, state["l4d2"], debug_log)
+            except Exception as ex:
+                ok = False
+                dbg("restore glows ERR %r" % ex)
+            if state["_closing"]:
+                return
+            close_progress(progress)
+            if ok:
+                state["glow_dirty"] = False
+                state["glow_applied"] = False
+                render_glows_view()
+                notify("Glows restaurados; se conservaron configs ajenas.",
+                       "ok")
+            else:
+                notify("No se pudieron restaurar los glows.", "err")
+            safe_update()
+
+        try:
+            track_task(page.run_task(_run))
+        except Exception as ex:
+            dbg("restore glows task ERR %r" % ex)
+            close_progress(progress)
+            notify("No se pudieron restaurar los glows.", "err")
 
     def do_enable(e):
         if not require_game_closed():
@@ -2621,6 +2980,7 @@ def main(page: ft.Page):
             [
                 "Se restaurará gameinfo.txt desde el respaldo seguro.",
                 "Se revertirá la visión de infectado modificada por el loader.",
+                "Se quitará el cfg de glows y su bloque gestionado en autoexec.cfg.",
                 "Se eliminarán únicamente copias de mods creadas por el loader.",
             ],
             note=("Los VPK de Workshop, mods externos y cambios ajenos al "
@@ -2772,120 +3132,20 @@ def main(page: ft.Page):
         expand=True,
     )
 
-    def detail_action_button(text, icon, on_click, primary=False):
-        return ft.TextButton(
-            text,
-            icon=icon,
-            on_click=on_click,
-            icon_color=ACCENT if primary else TEXT_DIM,
-            disabled=True,
-            style=ft.ButtonStyle(
-                color=TEXT if not primary else BG,
-                bgcolor=ACCENT if primary else SURFACE_2,
-                padding=ft.Padding.symmetric(horizontal=10, vertical=8),
-                shape=ft.RoundedRectangleBorder(radius=8),
-            ),
-        )
-
-    workshop_button_ref[0] = detail_action_button(
-        "Workshop",
-        (ft.Icons.OPEN_IN_NEW if hasattr(ft.Icons, "OPEN_IN_NEW")
-         else ft.Icons.LINK),
-        open_steam,
+    detail_parts = l4d2_detail_panel.build_detail_panel(
+        main_pane,
+        on_open_workshop=open_steam,
+        on_open_folder=open_folder,
+        on_copy_id=copy_addon_id,
+        on_toggle_fav=toggle_fav,
+        get_current_addon=displayed_preview_addon,
     )
-    folder_button_ref[0] = detail_action_button(
-        "Abrir carpeta",
-        (ft.Icons.FOLDER_OPEN if hasattr(ft.Icons, "FOLDER_OPEN")
-         else ft.Icons.FOLDER),
-        open_folder,
-    )
-    copy_id_button_ref[0] = detail_action_button(
-        "Copiar ID",
-        getattr(ft.Icons, "CONTENT_COPY", ft.Icons.COPY),
-        copy_addon_id,
-    )
-
-    detail_status_ref[0] = ft.Container(
-        content=ft.Row(
-            [
-                ft.Icon(ft.Icons.KEY, size=15, color=TEXT_DIM),
-                ft.Text("Inactivo", size=12, color=TEXT,
-                        weight=ft.FontWeight.W_700),
-            ],
-            spacing=7,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
-        bgcolor=SURFACE_2,
-        border=ft.Border.all(1, BORDER),
-        border_radius=8,
-        padding=ft.Padding.symmetric(horizontal=10, vertical=8),
-    )
-    detail_fav_ref[0] = ft.Container(
-        content=ft.Text("☆", size=20, color=TEXT_DIM),
-        width=38,
-        height=38,
-        bgcolor=SURFACE_2,
-        border=ft.Border.all(1, BORDER),
-        border_radius=8,
-        alignment=ft.Alignment.CENTER,
-        ink=True,
-        tooltip="Marcar favorito",
-        on_click=lambda e: (toggle_fav(displayed_preview_addon())
-                            if displayed_preview_addon() else None),
-    )
-
-    preview_panel = ft.Container(
-        content=ft.Column(
-            [
-                main_pane["img"],
-                ft.Container(height=8),
-                main_pane["title"],
-                main_pane["meta"],
-                ft.Container(height=6),
-                ft.Row(
-                    [
-                        detail_status_ref[0],
-                        ft.Container(expand=True),
-                        detail_fav_ref[0],
-                    ],
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                ft.Container(
-                    content=ft.Row(
-                        [
-                            ft.Container(
-                                content=ft.Text("Información", size=12,
-                                                color=ACCENT,
-                                                weight=ft.FontWeight.W_700),
-                                border=ft.Border.only(
-                                    bottom=ft.BorderSide(2, ACCENT)),
-                                padding=ft.Padding.only(bottom=8),
-                            ),
-                            ft.Text("Archivos", size=12, color=TEXT_DIM),
-                            ft.Text("Capturas", size=12, color=TEXT_DIM),
-                        ],
-                        spacing=18,
-                    ),
-                    padding=ft.Padding.only(top=8),
-                ),
-                ft.Divider(color=BORDER, height=1),
-                ft.Text("Descripción", size=12, color=TEXT,
-                        weight=ft.FontWeight.W_700),
-                main_pane["desc"],
-                ft.Container(height=2),
-                workshop_button_ref[0],
-                folder_button_ref[0],
-                copy_id_button_ref[0],
-            ],
-            spacing=7,
-        ),
-        width=286,
-        padding=12,
-        bgcolor="#10131A",
-        border=ft.Border.all(1, BORDER),
-        border_radius=8,
-    )
+    workshop_button_ref[0] = detail_parts["workshop_button"]
+    folder_button_ref[0] = detail_parts["folder_button"]
+    copy_id_button_ref[0] = detail_parts["copy_id_button"]
+    detail_status_ref[0] = detail_parts["status"]
+    detail_fav_ref[0] = detail_parts["favorite"]
+    preview_panel = detail_parts["panel"]
 
     center_wrap = ft.Container(
         content=ft.Row([center_column, preview_panel], expand=True,

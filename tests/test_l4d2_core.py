@@ -8,6 +8,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import l4d2_core as core
+import l4d2_glows
 
 
 GAMEINFO = """GameInfo
@@ -127,6 +128,23 @@ class CoreFileFlowTests(unittest.TestCase):
         restored = self.read_gameinfo()
         self.assertIn("custom\\external", restored)
         self.assertNotIn("mods\\12345", restored)
+
+    def test_restore_removes_loader_glows_without_touching_external_autoexec(self):
+        cfg = os.path.join(self.left4dead2, "cfg")
+        os.makedirs(cfg, exist_ok=True)
+        autoexec = os.path.join(cfg, "autoexec.cfg")
+        with open(autoexec, "w", encoding="utf-8") as file:
+            file.write("mat_monitorgamma 1.6\n")
+        self.assertTrue(l4d2_glows.apply_glows(
+            self.l4d2, l4d2_glows.default_colors(), log=lambda msg: None))
+
+        self.assertTrue(core.restore(self.l4d2, log=lambda msg: None))
+
+        self.assertFalse(os.path.exists(l4d2_glows.cfg_path(self.l4d2)))
+        with open(autoexec, encoding="utf-8") as file:
+            restored = file.read()
+        self.assertIn("mat_monitorgamma 1.6", restored)
+        self.assertNotIn(l4d2_glows.AUTOEXEC_BEGIN, restored)
 
     def test_restore_does_not_touch_untracked_disabled_vision_file(self):
         correction = os.path.join(self.left4dead2, "materials", "correction")
