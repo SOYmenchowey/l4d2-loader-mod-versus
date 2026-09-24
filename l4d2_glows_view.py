@@ -129,8 +129,8 @@ def _glow_card(item, colors, on_change, on_pick_color, on_select_color,
         focused_border_color=ACCENT,
         content_padding=ft.Padding.symmetric(horizontal=9, vertical=6),
         on_change=lambda e, key=item["key"]: on_change(key, e.control.value),
-        on_focus=lambda e, key=item["key"]: on_select_color(key),
-        on_click=lambda e, key=item["key"]: on_select_color(key),
+        on_focus=lambda e, key=item["key"]: on_select_color(key, rebuild=False),
+        on_click=lambda e, key=item["key"]: on_select_color(key, rebuild=False),
     )
     return ft.Container(
         content=ft.Row(

@@ -44,11 +44,16 @@ def make_type_badge(addon_type):
     )
 
 
+def _checkbox_event_value(event):
+    # Another queued click can overwrite control.value before this callback runs.
+    return event.data is True or event.data == "true"
+
+
 class ModRow(ft.Container):
     def __init__(self, addon, on_select, on_toggle, active,
                  with_checkbox, fav=False, on_fav=None,
                  show_active_badge=True, on_hover=None, on_leave=None,
-                 show_thumbnail=False):
+                 show_thumbnail=False, checked=False):
         self.addon = addon
         self.on_select = on_select
         self.checkbox = None
@@ -63,10 +68,10 @@ class ModRow(ft.Container):
         parts = []
         if with_checkbox:
             self.checkbox = ft.Checkbox(
-                value=False,
+                value=checked and not active,
                 active_color=ACCENT,
                 disabled=active,
-                on_change=lambda e: on_toggle(addon, e.control.value),
+                on_change=lambda e: on_toggle(addon, _checkbox_event_value(e)),
             )
             parts.append(self.checkbox)
 
@@ -161,7 +166,7 @@ def dialog_row(addon, with_checkbox=False, value=False, check_cb=None,
     box = None
     if with_checkbox:
         box = ft.Checkbox(value=value, active_color=ACCENT,
-                          on_change=lambda e: check_cb(addon, e.control.value))
+                          on_change=lambda e: check_cb(addon, _checkbox_event_value(e)))
 
     title = ft.Text(addon.get("title") or addon["id"], size=13,
                     weight=ft.FontWeight.W_500, color=TEXT,

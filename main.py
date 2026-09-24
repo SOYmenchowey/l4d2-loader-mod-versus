@@ -14,15 +14,13 @@ import l4d2_sidebar
 import l4d2_state
 import l4d2_ui as ui
 from l4d2_app_config import (
-    DEFAULT_WINDOW_HEIGHT,
     DEFAULT_WINDOW_WIDTH,
-    MIN_WINDOW_HEIGHT,
-    MIN_WINDOW_WIDTH,
     cfg_path as _cfg_path,
     dbg,
     debug_log,
+    window_geometry,
 )
-from l4d2_clipboard import copy_text_to_clipboard
+from l4d2_clipboard import copy_text_to_clipboard_async as copy_text_to_clipboard
 from l4d2_controls import (
     ModRow,
     dialog_row,
@@ -71,21 +69,10 @@ def main(page: ft.Page):
     page.padding = 0
     try:
         if not page.web:
-            page.window.width = DEFAULT_WINDOW_WIDTH
-            page.window.height = DEFAULT_WINDOW_HEIGHT
-            page.window.min_width = MIN_WINDOW_WIDTH
-            page.window.min_height = MIN_WINDOW_HEIGHT
+            for name, value in window_geometry().items():
+                setattr(page.window, name, value)
             page.window.resizable = True
             page.window.maximizable = True
-            try:
-                import ctypes
-                _sw = ctypes.windll.user32.GetSystemMetrics(0)
-                _sh = ctypes.windll.user32.GetSystemMetrics(1)
-                if _sw and _sh:
-                    page.window.left = (_sw - DEFAULT_WINDOW_WIDTH) // 2
-                    page.window.top = (_sh - DEFAULT_WINDOW_HEIGHT) // 2
-            except Exception:
-                pass
             if os.path.isfile(ICONO):
                 page.window.icon = ICONO
     except Exception:
@@ -94,7 +81,13 @@ def main(page: ft.Page):
     page.theme = ft.Theme(font_family="Segoe UI")
 
     state = l4d2_state.create_initial_state(_cfg_path)
-    state["glow_colors"] = l4d2_glows.load_colors()
+    startup_warning = None
+    try:
+        state["glow_colors"] = l4d2_glows.load_colors()
+    except Exception as ex:
+        dbg("load colors ERR %r" % ex)
+        state["glow_colors"] = l4d2_glows.default_colors()
+        startup_warning = "No se pudo leer la configuración de glows."
     state["glow_dirty"] = False
     state["glow_applied"] = False
     state["glow_preset"] = "Personalizado"
@@ -130,30 +123,58 @@ def main(page: ft.Page):
         except Exception:
             pass
 
+    dialogs = {}
+    closing_dialogs = set()
+
     def show_dlg(dlg):
+        dialogs[id(dlg.content)] = dlg
+        on_dismiss = dlg.on_dismiss
+
+        def dismissed(e):
+            dialogs.pop(id(dlg.content), None)
+            closing_dialogs.discard(id(dlg.content))
+            if on_dismiss:
+                on_dismiss(e)
+
+        dlg.on_dismiss = dismissed
         if hasattr(page, "open"):
             page.open(dlg)
         elif hasattr(page, "show_dialog"):
             page.show_dialog(dlg)
 
-    def close_dlg():
-        if hasattr(page, "close"):
-            page.close()
-        elif hasattr(page, "pop_dialog"):
-            page.pop_dialog()
+    def close_dlg(dlg):
+        if dlg is None:
+            return
+        dialogs.pop(id(dlg.content), None)
+        closing_dialogs.discard(id(dlg.content))
+        dlg.open = False
+        try:
+            dlg.update()
+        except Exception:
+            safe_update()
 
     def animate_display(cnt):
         dbg("dialog in")
         def _in():
+            if id(cnt) not in dialogs or id(cnt) in closing_dialogs:
+                return
             cnt.scale = 1.0
             cnt.opacity = 1.0
             try:
                 page.update()
             except Exception as ex:
                 dbg("dialog in ERR %r" % ex)
-        ui_later(0.04, _in)
+        if ui_later(0.04, _in) is None:
+            _in()
 
     def close_dialog_anim(cnt, pane=None):
+        dlg = dialogs.get(id(cnt))
+        if dlg is None or id(cnt) in closing_dialogs:
+            return
+        closing_dialogs.add(id(cnt))
+        if pane:
+            pane["generation"] = pane.get("generation", 0) + 1
+            pane["current_id"] = None
         dbg("dialog out")
         cnt.opacity = 0.0
         cnt.scale = 0.96
@@ -163,10 +184,11 @@ def main(page: ft.Page):
             dbg("dialog out ERR %r" % ex)
 
         def _c():
-            close_dlg()
+            close_dlg(dlg)
             dbg("dialog closed")
 
-        ui_later(0.16, _c)
+        if ui_later(0.16, _c) is None:
+            _c()
 
     def get_addon(aid):
         return next((a for a in state["addons"] if a["id"] == aid), None)
@@ -185,34 +207,40 @@ def main(page: ft.Page):
                 d[a["id"]] = x
         return d
 
-    def save_last_config(reason):
-        if not state.get("l4d2"):
-            return False
+    def save_config_file(name, data):
         try:
-            ids = sorted(core.currently_enabled(state["l4d2"]))
+            return bool(core.save_json(_cfg_path(name), data))
         except Exception as ex:
-            dbg("last config read ERR %r" % ex)
-            ids = sorted(state.get("active_ids") or set())
-        state["last_config"] = {
-            "ids": ids,
-            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "reason": reason,
-        }
-        ok = core.save_json(_cfg_path("last_config.json"),
-                            state["last_config"])
-        if ok:
-            dbg("last config saved (%d ids): %s" % (len(ids), reason))
-        return ok
+            dbg("save %s ERR %r" % (name, ex))
+            return False
 
     def save_favs():
-        core.save_json(_cfg_path("favs.json"), sorted(state["favs"]))
+        return save_config_file("favs.json", sorted(state["favs"]))
+
+    async def save_last_config_async(reason, l4d2):
+        try:
+            ids = sorted(await asyncio.to_thread(core.currently_enabled, l4d2))
+            config = {"ids": ids, "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                      "reason": reason}
+            ok = await asyncio.to_thread(save_config_file, "last_config.json", config)
+        except Exception as ex:
+            dbg("last config ERR %r" % ex)
+            ok = False
+        if ok:
+            state["last_config"] = config
+        elif not state["_closing"]:
+            notify("No se pudo guardar la configuración anterior.", "warn")
+        return ok
 
     def toggle_fav(addon):
+        previous = set(state["favs"])
         if addon["id"] in state["favs"]:
             state["favs"].discard(addon["id"])
         else:
             state["favs"].add(addon["id"])
-        save_favs()
+        if not save_favs():
+            state["favs"] = previous
+            notify("No se pudieron guardar los favoritos.", "err")
         refresh_list()
 
     def deps_sin_uso(removed_ids):
@@ -260,13 +288,16 @@ def main(page: ft.Page):
         page.update()
 
         def _in():
+            if _modal_card[0] is not card:
+                return
             card.opacity = 1.0
             card.scale = 1.0
             try:
                 page.update()
             except Exception:
                 pass
-        ui_later(0.04, _in)
+        if ui_later(0.04, _in) is None:
+            _in()
 
     def hide_card():
         card = _modal_card[0]
@@ -279,13 +310,17 @@ def main(page: ft.Page):
             pass
 
         def _final():
+            if _modal_card[0] is not card:
+                return
             modal_wrap.visible = False
+            modal_wrap.content = ft.Container(expand=True)
             _modal_card[0] = None
             try:
                 page.update()
             except Exception:
                 pass
-        ui_later(0.14, _final)
+        if ui_later(0.14, _final) is None:
+            _final()
 
     def notify(msg, kind="ok"):
         icon, color = {"ok": (CHECK_MARK, ACCENT),
@@ -442,6 +477,9 @@ def main(page: ft.Page):
                                weight=ft.FontWeight.W_600)
     footer_selection_text = ft.Text("Sin selección", size=12, color=TEXT_DIM)
 
+    preview_workers = {}
+    preview_slots = asyncio.Semaphore(4)
+
     def load_preview(addon, pane):
         url = addon.get("_preview_url")
         if not url:
@@ -449,15 +487,40 @@ def main(page: ft.Page):
         pane["generation"] = pane.get("generation", 0) + 1
         generation = pane["generation"]
         aid = addon["id"]
+        load_generation = state["_load_generation"]
 
         async def _load():
-            path = await asyncio.to_thread(core.get_cached_image, aid, url)
+            key = (aid, url)
+            worker = preview_workers.get(key)
+            if worker is None:
+                async def download():
+                    async with preview_slots:
+                        return await asyncio.to_thread(core.get_cached_image, aid, url)
+
+                worker = track_task(asyncio.create_task(download()))
+                preview_workers[key] = worker
+
+                def finished(done):
+                    if preview_workers.get(key) is done:
+                        preview_workers.pop(key, None)
+                    if not done.cancelled():
+                        done.exception()
+
+                worker.add_done_callback(finished)
+            try:
+                path = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                return
+            except Exception as ex:
+                dbg("preview ERR %r" % ex)
+                path = None
             if (not ui.request_is_current(
                     generation, pane.get("generation"), state["_closing"])
+                    or load_generation != state["_load_generation"]
                     or pane["current_id"] != aid):
                 return
             current = get_addon(aid)
-            if current:
+            if current and current.get("_preview_url") == url:
                 current["preview_local"] = path
             pane_set_img(pane, path)
             safe_update()
@@ -693,12 +756,12 @@ def main(page: ft.Page):
         except Exception:
             notify("No se pudo abrir la carpeta.", "err")
 
-    def copy_addon_id(e):
+    async def copy_addon_id(e):
         a = displayed_preview_addon()
         if not a:
             notify("Pase el cursor sobre un addon primero.", "warn")
             return
-        if copy_text_to_clipboard(page, a["id"], log=dbg):
+        if await copy_text_to_clipboard(page, a["id"], log=dbg):
             notify("ID copiado al portapapeles.", "ok")
         else:
             notify("No se pudo copiar el ID.", "err")
@@ -735,7 +798,11 @@ def main(page: ft.Page):
         if not state["l4d2"]:
             notify("No se encontró L4D2.", "warn")
             return
-        if not require_game_closed():
+        if state.get("_glow_status_error"):
+            notify("No se pudo comprobar la configuración de glows.", "err")
+            return
+        if state["_l4d2_was_running"] is True:
+            notify("Cierre L4D2 antes de restaurar la configuración.", "warn")
             return
         config = state.get("last_config") or {}
         ids = [str(value) for value in config.get("ids", [])]
@@ -753,36 +820,77 @@ def main(page: ft.Page):
                      if addon_id not in current and get_addon(addon_id)]
 
         def confirm_last():
-            if not require_game_closed():
+            if state.get("_restore_last_busy"):
                 return
-            if not to_disable and not to_enable:
-                close_dialog_anim(cnt)
-                notify("La última configuración ya está aplicada.", "ok")
-                return
-            save_last_config("Antes de volver a la última configuración")
-            ok_disable = True
-            ok_enable = True
-            if to_disable:
-                ok_disable = core.disable(state["l4d2"], to_disable,
-                                          log=debug_log)
-            if to_enable:
-                compat = [addon for addon in to_enable
-                          if not addon.get("is_vscript")]
-                if compat:
-                    ok_enable = core.enable(state["l4d2"], compat,
-                                            log=debug_log)
-            close_dialog_anim(cnt)
-            if ok_disable and ok_enable:
-                state["selected_ids"].clear()
-                refresh_list(sync_active=True)
-                msg = "Última configuración aplicada (%s)." % _quant(
-                    len(target), "addon", "addons")
-                if missing:
-                    msg += " %d ya no está(n) instalado(s)." % len(missing)
-                notify(msg, "ok")
-            else:
-                refresh_list(sync_active=True)
-                notify("No se pudo aplicar toda la última configuración.", "err")
+            state["_restore_last_busy"] = True
+            l4d2 = state["l4d2"]
+            close_dlg(dlg)
+            progress = show_progress("Aplicando última configuración...",
+                                     "Actualizando los addons activos de L4D2.")
+
+            async def _run_last():
+                error = None
+                actual = None
+                try:
+                    if state.get("_glow_status_error"):
+                        raise RuntimeError("No se pudo comprobar la configuración de glows.")
+                    if await asyncio.to_thread(core.l4d2_running):
+                        raise RuntimeError("Cierre L4D2 antes de aplicar la configuración.")
+                    current_ids = set(await asyncio.to_thread(core.currently_enabled, l4d2))
+                    disable_ids = sorted(current_ids - set(target))
+                    compat = [dict(get_addon(aid)) for aid in target
+                              if aid not in current_ids and get_addon(aid)
+                              and not get_addon(aid).get("is_vscript")]
+                    if disable_ids or compat:
+                        await save_last_config_async(
+                            "Antes de volver a la última configuración", l4d2)
+                    if disable_ids and not await asyncio.to_thread(
+                            core.disable, l4d2, disable_ids, debug_log):
+                        raise RuntimeError("No se pudieron quitar todos los addons anteriores.")
+                    if compat and not await asyncio.to_thread(
+                            core.enable, l4d2, compat, debug_log):
+                        raise RuntimeError("No se pudieron activar todos los addons guardados.")
+                except Exception as ex:
+                    error = str(ex)
+                    dbg("restore last ERR %r" % ex)
+                finally:
+                    try:
+                        actual = set(await asyncio.to_thread(core.currently_enabled, l4d2))
+                    except Exception as ex:
+                        error = error or str(ex)
+                    state["_restore_last_busy"] = False
+                    close_progress(progress)
+                if state["_closing"] or state["l4d2"] != l4d2:
+                    return
+                if actual is not None:
+                    state["active_ids"] = actual
+                complete = actual == set(ids) and not error
+                if complete:
+                    state["selected_ids"].clear()
+                refresh_list()
+                if complete:
+                    notify("Última configuración aplicada (%s)." % _quant(
+                        len(actual), "addon", "addons"), "ok")
+                else:
+                    msg = ("No se pudo verificar la configuración activa." if actual is None
+                           else "Configuración parcial: %d de %d addons guardados activos." % (
+                               len(actual & set(ids)), len(ids)))
+                    if missing:
+                        msg += " %d no instalado(s)." % len(missing)
+                    extra = (actual or set()) - set(ids)
+                    if extra:
+                        msg += " %d anterior(es) aún activo(s)." % len(extra)
+                    if error:
+                        msg += " " + error
+                    notify(msg, "warn" if actual is not None else "err")
+
+            try:
+                track_task(page.run_task(_run_last))
+            except Exception as ex:
+                state["_restore_last_busy"] = False
+                close_progress(progress)
+                dbg("restore last task ERR %r" % ex)
+                notify("No se pudo iniciar la restauración de configuración.", "err")
 
         items = [
             "Se intentará volver a %s." % _quant(
@@ -822,13 +930,19 @@ def main(page: ft.Page):
         show_dlg(dlg)
         animate_display(cnt)
 
-    def open_diagnostic(e=None):
-        snap = collect_health_snapshot(refresh_running=True)
+    async def open_diagnostic(e=None):
+        generation = state['_load_generation']
+        snap = await asyncio.to_thread(
+            diagnostics.collect_health_snapshot, dict(state), _cfg_path, True, dbg)
+        if state['_closing'] or state['_load_generation'] != generation:
+            return
+        state['_l4d2_was_running'] = snap['game_running']
+        state['_game_status_error'] = snap['game_status_error']
         report = ui.format_diagnostic_report(snap)
         warnings = ui.diagnostic_warnings(snap)
 
-        def copy_report(ev=None):
-            if copy_text_to_clipboard(page, report, log=dbg):
+        async def copy_report(ev=None):
+            if await copy_text_to_clipboard(page, report, log=dbg):
                 notify("Diagnóstico copiado al portapapeles.", "ok")
             else:
                 notify("No se pudo copiar el diagnóstico.", "err")
@@ -1025,9 +1139,10 @@ def main(page: ft.Page):
                                                            "SPORTS_ESPORTS",
                                                            ft.Icons.INFO_OUTLINE),
                                                    "Juego",
-                                                   "Abierto" if snap["game_running"]
+                                                   "Desconocido" if snap["game_running"] is None
+                                                   else "Abierto" if snap["game_running"]
                                                    else "Cerrado",
-                                                   not snap["game_running"]),
+                                                   snap["game_running"] is False),
                                         detail_row(
                                                    getattr(ft.Icons, "STEAM",
                                                            ft.Icons.LINK),
@@ -1173,30 +1288,49 @@ def main(page: ft.Page):
         show_dlg(dlg)
         animate_display(cnt)
 
-    def toggle_vision(e):
+    async def toggle_vision(e):
         if not state["l4d2"]:
             notify("No se encontró L4D2.", "warn")
             return
-        if not require_game_closed():
+        if not await require_game_closed():
             return
-        st = core.vision_state(state["l4d2"])
-        if st == "unknown":
-            notify("No hay archivos de visión de infectado en el juego.",
-                   "warn")
+        if state.get("_vision_busy"):
             return
-        if st == "off":
-            ok = core.restore_infected_vision(state["l4d2"], log=debug_log)
-            msg = ("Visión de infectado restaurada (tinte normal)." if ok
-                   else "No se pudo restaurar la visión; ejecute la app "
-                        "como administrador y reintente.")
-        else:
-            ok = core.disable_infected_vision(state["l4d2"], log=debug_log)
-            msg = ("Visión de infectado quitada (sin tinte naranja/azul)."
-                   if ok else "No se pudo quitar la visión; ejecute la app "
-                              "como administrador y reintente.")
-        notify(msg, "ok" if ok else "err")
-        sidebar_holder.content = build_sidebar()
-        page.update()
+        state["_vision_busy"] = True
+        l4d2 = state["l4d2"]
+
+        async def _run_vision():
+            try:
+                st = await asyncio.to_thread(core.vision_state, l4d2)
+                if st == "unknown":
+                    notify("No hay archivos de visión de infectado en el juego.", "warn")
+                    return
+                operation = core.restore_infected_vision if st == "off" else core.disable_infected_vision
+                ok = await asyncio.to_thread(operation, l4d2, log=debug_log)
+                if state["_closing"]:
+                    return
+                if ok:
+                    notify("Visión de infectado restaurada (tinte normal)." if st == "off"
+                           else "Visión de infectado quitada (sin tinte naranja/azul).", "ok")
+                else:
+                    notify("No se pudo cambiar la visión de infectado.", "err")
+                sidebar_holder.content = build_sidebar()
+                safe_update()
+            except Exception as ex:
+                dbg("vision ERR %r" % ex)
+                if not state["_closing"]:
+                    notify("No se pudo cambiar la visión de infectado: %s" % ex, "err")
+            finally:
+                state["_vision_busy"] = False
+
+        try:
+            track_task(page.run_task(_run_vision))
+        except Exception as ex:
+            state["_vision_busy"] = False
+            notify("No se pudo iniciar el cambio de visión: %s" % ex, "err")
+
+    async def restore_original_clicked(e):
+        await do_restore(e)
 
     def build_sidebar():
         return l4d2_sidebar.build_sidebar(
@@ -1207,7 +1341,7 @@ def main(page: ft.Page):
             on_nav=lambda view: switch_view(view),
             on_diagnostic=open_diagnostic,
             on_restore_last=do_restore_last_config,
-            on_restore_original=lambda e: do_restore(),
+            on_restore_original=restore_original_clicked,
             on_toggle_vision=toggle_vision,
             on_tiktok=open_tiktok,
             tiktok_url=TIKTOK_URL,
@@ -1257,8 +1391,10 @@ def main(page: ft.Page):
             if not resolved:
                 notify("Esa carpeta no parece contener Left 4 Dead 2.", "err")
                 return
+            if not save_config_file("game_path.json", {"path": resolved}):
+                notify("No se pudo guardar la ruta de L4D2.", "err")
+                return
             state["manual_l4d2_path"] = resolved
-            core.save_json(_cfg_path("game_path.json"), {"path": resolved})
             notify("Ruta de L4D2 guardada. Recargando mods...", "ok")
             load_addons()
 
@@ -1363,9 +1499,9 @@ def main(page: ft.Page):
             progress = load_progress
             if state.get("_load_progress") is progress:
                 state["_load_progress"] = None
-                close_progress(progress)
+            close_progress(progress)
 
-        async def _load():
+        async def _scan():
             l4d2 = await asyncio.to_thread(
                 core.find_l4d2, state.get("manual_l4d2_path"))
             if not ui.request_is_current(
@@ -1384,7 +1520,14 @@ def main(page: ft.Page):
                        "err")
                 return
 
-            state["glow_applied"] = l4d2_glows.is_applied(l4d2)
+            try:
+                state["glow_applied"] = await asyncio.to_thread(l4d2_glows.is_applied, l4d2)
+                state["_glow_status_error"] = None
+            except (OSError, ValueError) as ex:
+                state["glow_applied"] = None
+                state["_glow_status_error"] = str(ex) or type(ex).__name__
+                notify("No se pudo comprobar la configuración de glows. "
+                       "Recarga los mods tras corregir el archivo: %s" % ex, "warn")
             status_dot.bgcolor = ACCENT
             status_text.value = os.path.basename(l4d2)
             status_text.tooltip = l4d2
@@ -1393,6 +1536,9 @@ def main(page: ft.Page):
                 notify("El archivo gameinfo.txt no es escribible; ejecute la "
                        "app como administrador.", "warn")
 
+            pending_legacy = await asyncio.to_thread(core.migrate_legacy_addons, l4d2, debug_log)
+            if pending_legacy:
+                notify('Hay addons antiguos sin origen verificable; se conservaron sus archivos.', 'warn')
             raw = await asyncio.to_thread(core.list_addons, l4d2)
             for addon in raw:
                 info = await asyncio.to_thread(core.inspect_vpk, addon["path"])
@@ -1411,15 +1557,47 @@ def main(page: ft.Page):
                 finish_load_progress()
                 return
             state["addons"] = raw
-            state["_fresh_scan"] = True
+            l4d2_state.reconcile_addon_ids(state, raw)
             state["_disk_ids"] = {addon["id"] for addon in raw}
+            state["_disk_snapshot"] = core.addon_snapshot(raw)
             state["_row_cache"].clear()
             state["_render_signature"] = None
             _seed_previews_from_cache()
+            await cleanup_orphans_async(l4d2, generation)
+            if not ui.request_is_current(
+                    generation, state["_load_generation"], state["_closing"]):
+                return
+            active = await asyncio.to_thread(core.currently_enabled, l4d2)
+            if not ui.request_is_current(
+                    generation, state["_load_generation"], state["_closing"]):
+                return
+            state["active_ids"] = set(active)
             sidebar_holder.content = build_sidebar()
-            refresh_list(sync_active=True)
-            await fetch_task(generation, [addon["id"] for addon in raw])
-            finish_load_progress()
+            refresh_list()
+            return [addon["id"] for addon in raw]
+
+        async def _load():
+            try:
+                ids = await _scan()
+                finish_load_progress()
+                if ids is not None and ui.request_is_current(
+                        generation, state["_load_generation"], state["_closing"]):
+                    await fetch_task(generation, ids)
+            except asyncio.CancelledError:
+                raise
+            except Exception as ex:
+                dbg("load ERR %r" % ex)
+                if ui.request_is_current(
+                        generation, state["_load_generation"], state["_closing"]):
+                    notify("No se pudo completar la carga de mods: %s" % ex, "err")
+            finally:
+                finish_load_progress()
+                if generation == state["_load_generation"]:
+                    state["fetching"] = False
+                    safe_update()
+                    if state["_pending_rescan"] and not state["_closing"]:
+                        state["_pending_rescan"] = False
+                        load_addons()
 
         try:
             track_task(page.run_task(_load))
@@ -1427,6 +1605,7 @@ def main(page: ft.Page):
             state["fetching"] = False
             finish_load_progress()
             dbg("load task ERR %r" % ex)
+            notify("No se pudo iniciar la carga de mods.", "err")
 
     def _seed_previews_from_cache():
         cache_d = os.path.join(os.getenv("LOCALAPPDATA") or os.getcwd(),
@@ -1461,16 +1640,13 @@ def main(page: ft.Page):
             addon["description"] = detail.get("description")
             addon["description_raw"] = detail.get("description_raw")
             addon["_preview_url"] = detail.get("preview_url")
-        known = set(by_id)
-        titles = {aid: addon.get("title") or aid
-                  for aid, addon in by_id.items()}
+        suggestions = await asyncio.to_thread(
+            core.suggest_dependencies, [dict(addon) for addon in state["addons"]])
+        if not ui.request_is_current(
+                generation, state["_load_generation"], state["_closing"]):
+            return
         for addon in state["addons"]:
-            raw = addon.get("description_raw") or addon.get("description") or ""
-            addon["auto_deps"] = [
-                suggestion["id"]
-                for suggestion in core.suggest_deps(raw, known, titles)
-                if suggestion["id"] != addon["id"]
-            ] if raw else []
+            addon["auto_deps"] = suggestions.get(addon["id"], [])
         state["fetching"] = False
         state["_row_cache"].clear()
         state["_render_signature"] = None
@@ -1480,24 +1656,56 @@ def main(page: ft.Page):
             if previewed:
                 pane_set(main_pane, previewed)
         refresh_list()
-        if state["_pending_rescan"]:
-            state["_pending_rescan"] = False
-            load_addons()
+
+    cleanup_lock = asyncio.Lock()
+
+    async def cleanup_orphans_async(l4d2, generation):
+        removed, pending, error = [], None, None
+        async with cleanup_lock:
+            if not ui.request_is_current(
+                    generation, state["_load_generation"], state["_closing"]) \
+                    or state.get("_glow_status_error"):
+                return
+            try:
+                running = None
+                running = await asyncio.to_thread(core.l4d2_running)
+                state["_l4d2_was_running"] = running
+                if not running:
+                    removed = await asyncio.to_thread(core.cleanup_orphans, l4d2, debug_log)
+            except Exception as ex:
+                if running is None:
+                    state["_l4d2_was_running"] = None
+                error = ex
+                dbg("cleanup ERR %r" % ex)
+            try:
+                pending = set(await asyncio.to_thread(core.currently_enabled_orphans, l4d2))
+            except Exception as ex:
+                error = error or ex
+            if not ui.request_is_current(
+                    generation, state["_load_generation"], state["_closing"]):
+                return
+            if pending is not None:
+                set_pending_cleanup(pending, announce=bool(state["_l4d2_was_running"]))
+            if error:
+                notify("No se pudo completar la limpieza de huérfanos: %s" % error, "warn")
+            elif pending and not state["_l4d2_was_running"]:
+                notify("Limpieza parcial: %d addon(s) pendiente(s)." % len(pending), "warn")
+            elif removed:
+                notify("Se limpiaron %d addon(s) desuscrito(s)." % len(removed), "warn")
 
     async def watch_workshop():
         while not state["_closing"]:
-            await asyncio.sleep(3)
+            await asyncio.sleep(10)
             try:
                 if not state["l4d2"]:
                     continue
                 await _check_game_closed()
                 disk_addons = await asyncio.to_thread(
                     core.list_addons, state["l4d2"])
-                found = {addon["id"] for addon in disk_addons}
-                if found != state["_disk_ids"]:
-                    dbg("workshop changed: %d -> %d" % (
-                        len(state["_disk_ids"]), len(found)))
-                    state["_disk_ids"] = found
+                snapshot = core.addon_snapshot(disk_addons)
+                if snapshot != state.get("_disk_snapshot"):
+                    dbg("workshop files changed")
+                    state["_disk_snapshot"] = snapshot
                     if state["fetching"]:
                         state["_pending_rescan"] = True
                         dbg("fetch in progress, pending rescan")
@@ -1509,36 +1717,33 @@ def main(page: ft.Page):
                 dbg("watch ERR %r" % ex)
 
     async def _check_game_closed():
-        running_now = await asyncio.to_thread(core.l4d2_running)
+        try:
+            running_now = await asyncio.to_thread(core.l4d2_running)
+        except Exception as ex:
+            if state["_l4d2_was_running"] is not None:
+                notify("No se pudo comprobar el estado de L4D2.", "warn")
+            state["_l4d2_was_running"] = None
+            dbg("game status ERR %r" % ex)
+            return
         was_running = state["_l4d2_was_running"]
         state["_l4d2_was_running"] = running_now
         if running_now != was_running:
             sidebar_holder.content = build_sidebar()
             safe_update()
-        if running_now:
-            pending = set(await asyncio.to_thread(
-                core.currently_enabled_orphans, state["l4d2"]))
-            if pending != state["_pending_cleanup_ids"]:
-                set_pending_cleanup(pending, announce=True)
-            return
         if not (was_running and not running_now):
             return
-        removed = await asyncio.to_thread(
-            core.cleanup_orphans, state["l4d2"], dbg)
-        remaining = set(await asyncio.to_thread(
-            core.currently_enabled_orphans, state["l4d2"]))
-        set_pending_cleanup(remaining)
-        if removed:
-            dbg("cleanup_orphans tras cierre del juego: %s" % ", ".join(removed))
-            load_addons()
-            notify(
-                "Se quitaron %d addon(s) de los que ya no estás suscrito." % len(removed),
-                "warn")
+        generation, l4d2 = state["_load_generation"], state["l4d2"]
+        await cleanup_orphans_async(l4d2, generation)
+        active = await asyncio.to_thread(core.currently_enabled, l4d2)
+        if ui.request_is_current(generation, state["_load_generation"], state["_closing"]):
+            state["active_ids"] = set(active)
+            refresh_list()
 
     def visible_addons(active_ids):
         return ui.visible_addons(
             state["addons"], active_ids, state["favs"],
-            view=state["view"], category=state["category"],
+            view=state["view"], category=(state["category"]
+                                        if state["view"] == "mods" else "Todos"),
             query=state["query"], sort_recent=state["sort_recent"],
         )
 
@@ -1569,7 +1774,7 @@ def main(page: ft.Page):
 
     def make_empty_state():
         title, detail = ui.empty_state_message(
-            state["view"], state["category"], state["query"],
+            state["view"], (state["category"] if state["view"] == "mods" else "Todos"), state["query"],
             bool(state["addons"]),
         )
         return ft.Container(
@@ -1601,18 +1806,6 @@ def main(page: ft.Page):
         filters_row.visible = state["view"] == "mods"
         list_toolbar.visible = state["view"] == "mods"
         preview_panel.visible = True
-
-        if state["l4d2"] and state["_fresh_scan"]:
-            orphans_cleaned = core.cleanup_orphans(state["l4d2"], log=debug_log)
-            if orphans_cleaned:
-                notify("%s huérfano%s limpio%s (desuscrito del workshop)." % (
-                    _quant(len(orphans_cleaned), "addon", "addons"),
-                    "" if len(orphans_cleaned) == 1 else "s",
-                    "" if len(orphans_cleaned) == 1 else "s"), "warn")
-            pending = (set(core.currently_enabled_orphans(state["l4d2"]))
-                       if core.l4d2_running() else set())
-            set_pending_cleanup(pending, announce=True)
-            state["_fresh_scan"] = False
 
         if sync_active:
             state["active_ids"] = set(core.currently_enabled(state["l4d2"])) \
@@ -1647,6 +1840,7 @@ def main(page: ft.Page):
                         on_toggle=on_toggle,
                         active=is_active,
                         with_checkbox=in_mods_view,
+                        checked=addon["id"] in state["selected_ids"],
                         fav=addon["id"] in state["favs"],
                         on_fav=toggle_fav,
                         show_active_badge=in_mods_view,
@@ -1729,11 +1923,44 @@ def main(page: ft.Page):
 
     search_field.on_change = search_changed
 
-    def require_game_closed():
-        if core.l4d2_running():
+    async def require_game_closed():
+        if state.get("_glow_status_error"):
+            notify("No se puede modificar L4D2 hasta comprobar su configuración de glows.", "err")
+            return False
+        if state.get('_checking_game'):
+            return False
+        generation, game = state['_load_generation'], state['l4d2']
+        state['_checking_game'] = True
+        try:
+            running = await asyncio.to_thread(core.l4d2_running)
+            if (state['_closing'] or state['_load_generation'] != generation
+                    or state['l4d2'] != game):
+                return False
+            state["_l4d2_was_running"] = running
+        except Exception as ex:
+            state["_l4d2_was_running"] = None
+            dbg("game status ERR %r" % ex)
+            notify("No se pudo comprobar si L4D2 está cerrado. Inténtalo de nuevo.", "err")
+            return False
+        finally:
+            state['_checking_game'] = False
+        if running:
             notify("Cierre el juego (Left 4 Dead 2) antes de modificar los addons.",
                    "err")
             return False
+        return True
+
+    async def sync_active_state(game, generation):
+        try:
+            active = set(await asyncio.to_thread(core.currently_enabled, game))
+        except Exception as ex:
+            notify('No se pudo releer el estado de addons: %s' % ex, 'err')
+            return False
+        if (state['_closing'] or state['_load_generation'] != generation
+                or state['l4d2'] != game):
+            return False
+        state['active_ids'] = active
+        refresh_list()
         return True
 
     def win_size():
@@ -1751,14 +1978,15 @@ def main(page: ft.Page):
     def show_progress(title, subtitle):
         cnt = progress_dialog_content(title, subtitle)
         dlg = ft.AlertDialog(content=cnt, actions=[], modal=True)
-        progress = {"content": cnt}
+        progress = {"content": cnt, "dialog": dlg, "closed": False}
         show_dlg(dlg)
         animate_display(cnt)
         return progress
 
     def close_progress(progress):
-        if not progress:
+        if not progress or progress.get("closed"):
             return
+        progress["closed"] = True
         if progress.get("content"):
             close_dialog_anim(progress["content"])
 
@@ -1770,9 +1998,10 @@ def main(page: ft.Page):
         footer_selection_text.value = "Glows pendientes"
         safe_update()
 
-    def select_glow_color(key):
+    def select_glow_color(key, rebuild=True):
         state["selected_glow_key"] = key
-        render_glows_view()
+        if rebuild:
+            render_glows_view()
         safe_update()
 
     def open_glow_color_picker(key, label):
@@ -2162,11 +2391,11 @@ def main(page: ft.Page):
             )
         ]
 
-    def do_apply_glows(e=None):
+    async def do_apply_glows(e=None):
         if not state["l4d2"]:
             notify("No se encontró L4D2.", "warn")
             return
-        if not require_game_closed():
+        if not await require_game_closed():
             return
         try:
             colors = l4d2_glows.normalized_colors(state["glow_colors"])
@@ -2211,11 +2440,11 @@ def main(page: ft.Page):
             close_progress(progress)
             notify("No se pudieron aplicar los glows.", "err")
 
-    def do_restore_glows(e=None):
+    async def do_restore_glows(e=None):
         if not state["l4d2"]:
             notify("No se encontró L4D2.", "warn")
             return
-        if not require_game_closed():
+        if not await require_game_closed():
             return
         progress = show_progress(
             "Restaurando glows...",
@@ -2249,8 +2478,8 @@ def main(page: ft.Page):
             close_progress(progress)
             notify("No se pudieron restaurar los glows.", "err")
 
-    def do_enable(e):
-        if not require_game_closed():
+    async def do_enable(e):
+        if not await require_game_closed():
             return
         chosen = [a for a in state["addons"]
                   if a["id"] in state["selected_ids"]
@@ -2335,7 +2564,7 @@ def main(page: ft.Page):
                 close_dialog_anim(cnt, pane)
                 notify("Ningún addon compatible seleccionado.", "warn")
                 return
-            close_dlg()
+            close_dlg(dlg)
             progress = show_progress(
                 "Activando addons...",
                 "Aplicando la selección en la configuración de L4D2.",
@@ -2343,7 +2572,7 @@ def main(page: ft.Page):
 
             async def _run_enable():
                 try:
-                    save_last_config("Antes de habilitar addons")
+                    await save_last_config_async("Antes de habilitar addons", state["l4d2"])
                     ok = await asyncio.to_thread(
                         core.enable, state["l4d2"], compat_addons, debug_log)
                 except Exception as ex:
@@ -2407,8 +2636,8 @@ def main(page: ft.Page):
             names += ", ..."
         return names
 
-    def do_quitar_addon(e):
-        if not require_game_closed():
+    async def do_quitar_addon(e):
+        if not await require_game_closed():
             return
         act = [a for a in state["addons"] if a["id"] in state["active_ids"]]
         if not act:
@@ -2652,7 +2881,8 @@ def main(page: ft.Page):
             ids = list(checked)
             extra = deps_sin_uso(ids)
             total = sorted(set(ids) | set(extra))
-            close_dlg()
+            game, generation = state['l4d2'], state['_load_generation']
+            close_dlg(dlg)
             progress = show_progress(
                 "Quitando addons...",
                 "Actualizando la configuración activa de L4D2.",
@@ -2660,18 +2890,20 @@ def main(page: ft.Page):
 
             async def _run_disable():
                 try:
-                    save_last_config("Antes de quitar addons")
+                    await save_last_config_async("Antes de quitar addons", game)
                     ok = await asyncio.to_thread(
-                        core.disable, state["l4d2"], total, debug_log)
+                        core.disable, game, total, debug_log)
                 except Exception as ex:
                     ok = False
                     dbg("disable async ERR %r" % ex)
                 if state["_closing"]:
                     return
                 close_progress(progress)
+                if not await sync_active_state(game, generation):
+                    return
                 if ok:
                     state["selected_ids"].difference_update(total)
-                    refresh_list(sync_active=True)
+                    refresh_list()
                     msg = "%s deshabilitado%s" % (
                         _quant(len(total), "addon", "addons"),
                         "" if len(total) == 1 else "s")
@@ -2680,7 +2912,7 @@ def main(page: ft.Page):
                             len(extra), "requisito", "requisitos")
                     notify(msg, "ok")
                 else:
-                    notify("No se pudieron quitar los addons", "err")
+                    notify("Desactivación incompleta. Se actualizó el estado real de los addons.", "err")
 
             try:
                 track_task(page.run_task(_run_disable))
@@ -2716,8 +2948,8 @@ def main(page: ft.Page):
         show_dlg(dlg)
         animate_display(cnt)
 
-    def do_quitar_todos(e):
-        if not require_game_closed():
+    async def do_quitar_todos(e):
+        if not await require_game_closed():
             return
         n = len(state["active_ids"])
         if not n:
@@ -2750,7 +2982,8 @@ def main(page: ft.Page):
 
         def confirm_quit_all():
             ids = list(state["active_ids"])
-            close_dlg()
+            game, generation = state['l4d2'], state['_load_generation']
+            close_dlg(dlg)
             progress = show_progress(
                 "Quitando addons...",
                 "Deshabilitando todos los addons activos.",
@@ -2758,23 +2991,25 @@ def main(page: ft.Page):
 
             async def _run_disable_all():
                 try:
-                    save_last_config("Antes de quitar todos")
+                    await save_last_config_async("Antes de quitar todos", game)
                     ok = await asyncio.to_thread(
-                        core.disable, state["l4d2"], ids, debug_log)
+                        core.disable, game, ids, debug_log)
                 except Exception as ex:
                     ok = False
                     dbg("disable all async ERR %r" % ex)
                 if state["_closing"]:
                     return
                 close_progress(progress)
+                if not await sync_active_state(game, generation):
+                    return
                 if ok:
                     state["selected_ids"].difference_update(ids)
-                    refresh_list(sync_active=True)
+                    refresh_list()
                     notify("%s deshabilitado%s" % (
                         _quant(len(ids), "addon", "addons"),
                         "" if len(ids) == 1 else "s"), "ok")
                 else:
-                    notify("No se pudieron quitar los addons", "err")
+                    notify("Desactivación incompleta. Se actualizó el estado real de los addons.", "err")
 
             try:
                 track_task(page.run_task(_run_disable_all))
@@ -2903,8 +3138,12 @@ def main(page: ft.Page):
         name = (tf.value or "").strip() or ("Preset %d" % (
             len(state["presets"]) + 1))
         n = len(state["selected_ids"])
-        state["presets"][name] = sorted(state["selected_ids"])
-        core.save_json(_cfg_path("presets.json"), state["presets"])
+        presets = dict(state["presets"])
+        presets[name] = sorted(state["selected_ids"])
+        if not save_config_file("presets.json", presets):
+            notify("No se pudo guardar el preset.", "err")
+            return
+        state["presets"] = presets
         state["selected_ids"].clear()
         hide_card()
         refresh_list()
@@ -2922,23 +3161,27 @@ def main(page: ft.Page):
             "" if len(ids) == 1 else "s"), "ok")
 
     def remove_preset(name):
-        state["presets"].pop(name, None)
-        core.save_json(_cfg_path("presets.json"), state["presets"])
+        presets = dict(state["presets"])
+        presets.pop(name, None)
+        if not save_config_file("presets.json", presets):
+            notify("No se pudo eliminar el preset guardado.", "err")
+            return
+        state["presets"] = presets
         hide_card()
         notify("Preset '%s' eliminado" % name, "ok")
 
-    def do_restore():
+    async def do_restore(e=None):
         if not state["l4d2"]:
             notify("No se encontró L4D2.", "warn")
             return
-        if not require_game_closed():
+        if not await require_game_closed():
             return
 
-        def confirm_restore():
-            if not require_game_closed():
+        async def confirm_restore(e=None):
+            if not await require_game_closed():
                 return
-            save_last_config("Antes de restaurar original")
-            close_dlg()
+            game, generation = state['l4d2'], state['_load_generation']
+            close_dlg(dlg)
             progress = show_progress(
                 "Restaurando original...",
                 "Revirtiendo cambios del loader de forma segura.",
@@ -2946,14 +3189,17 @@ def main(page: ft.Page):
 
             async def _run_restore():
                 try:
+                    await save_last_config_async("Antes de restaurar original", game)
                     ok = await asyncio.to_thread(
-                        core.restore, state["l4d2"], debug_log)
+                        core.restore, game, debug_log)
                 except Exception as ex:
                     ok = False
                     dbg("restore async ERR %r" % ex)
                 if state["_closing"]:
                     return
                 close_progress(progress)
+                if not await sync_active_state(game, generation):
+                    return
                 if not ok:
                     notify("No se pudo completar la restauración. No se tocaron "
                            "archivos ajenos; revise el registro de depuración.",
@@ -2963,7 +3209,7 @@ def main(page: ft.Page):
                 state["preview_id"] = None
                 set_pending_cleanup(set())
                 sidebar_holder.content = build_sidebar()
-                refresh_list(sync_active=True)
+                refresh_list()
                 notify("L4D2 fue restaurado al estado anterior al loader.", "ok")
 
             try:
@@ -2997,7 +3243,7 @@ def main(page: ft.Page):
                 ft.FilledButton(
                     "Restaurar original",
                     icon=ft.Icons.RESTORE,
-                    on_click=lambda ev: confirm_restore(),
+                    on_click=confirm_restore,
                     style=ft.ButtonStyle(
                         bgcolor=DANGER, color=BG,
                         shape=ft.RoundedRectangleBorder(radius=8))),
@@ -3211,6 +3457,9 @@ def main(page: ft.Page):
             except Exception:
                 pass
         state["_tasks"].clear()
+        for dlg in list(dialogs.values()):
+            close_dlg(dlg)
+        modal_wrap.visible = False
 
     def apply_responsive_layout():
         width = float(getattr(page, "width", None) or DEFAULT_WINDOW_WIDTH)
@@ -3253,6 +3502,8 @@ def main(page: ft.Page):
 
     header_actions.content = build_header_actions()
     page.add(ft.Stack([main_row, toast_wrapper, modal_wrap], expand=True))
+    if startup_warning:
+        notify(startup_warning, "warn")
     apply_responsive_layout()
     ui_later(0.05, lambda: (apply_responsive_layout(), safe_update()))
     load_addons()

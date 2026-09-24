@@ -1,6 +1,22 @@
 import l4d2_core as core
 
 
+def reconcile_addon_ids(state, addons):
+    aliases = {a.get('_canonical_id', a['id']): a['id'] for a in addons}
+    def mapped(ids):
+        return list(dict.fromkeys(aliases.get(aid, aid) for aid in ids))
+    for key in ('selected_ids', 'favs'):
+        state[key] = set(mapped(state[key]))
+    state['presets'] = {name: mapped(ids) for name, ids in state['presets'].items()}
+    if state['last_config'].get('ids'):
+        state['last_config'] = dict(state['last_config'], ids=mapped(state['last_config']['ids']))
+    deps = {}
+    for aid, required in state['deps'].items():
+        key = aliases.get(aid, aid)
+        deps[key] = mapped(deps.get(key, []) + required)
+    state['deps'] = deps
+
+
 def _saved_game_path(cfg_path):
     data = core.load_json(cfg_path("game_path.json"), {}) or {}
     return data.get("path") if isinstance(data, dict) else None

@@ -6,10 +6,19 @@ import l4d2_core as core
 def collect_health_snapshot(state, cfg_path, refresh_running=False, log=None):
     l4d2 = state.get("l4d2")
     game_found = bool(l4d2 and os.path.isdir(l4d2))
-    running = bool(state.get("_l4d2_was_running"))
+    running = state.get("_l4d2_was_running")
+    status_error = state.get("_game_status_error")
     if refresh_running:
-        running = core.l4d2_running()
+        try:
+            running = core.l4d2_running()
+            status_error = None
+        except OSError as ex:
+            running = None
+            status_error = str(ex)
+            if log:
+                log("health game status ERR %r" % ex)
         state["_l4d2_was_running"] = running
+        state["_game_status_error"] = status_error
 
     gameinfo = (os.path.join(l4d2, "left4dead2", "gameinfo.txt")
                 if game_found else "")
@@ -41,6 +50,7 @@ def collect_health_snapshot(state, cfg_path, refresh_running=False, log=None):
         "l4d2_path": l4d2,
         "game_found": game_found,
         "game_running": running,
+        "game_status_error": status_error,
         "workshop_exists": bool(workshop and os.path.isdir(workshop)),
         "gameinfo_exists": gameinfo_exists,
         "gameinfo_writable": bool(gameinfo_exists and os.access(

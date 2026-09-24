@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import subprocess
 import sys
 
@@ -106,21 +108,25 @@ def _copy_text_with_clip_exe(text, log=None):
         return False
 
 
-def _copy_text_with_flet(page, text, log=None):
+async def _copy_text_with_flet(page, text, log=None):
     try:
         clipboard = getattr(page, "clipboard", None)
         if clipboard and hasattr(clipboard, "set"):
-            clipboard.set(text)
+            result = clipboard.set(text)
+            if inspect.isawaitable(result):
+                await result
             return True
         if hasattr(page, "set_clipboard"):
-            page.set_clipboard(text)
+            result = page.set_clipboard(text)
+            if inspect.isawaitable(result):
+                await result
             return True
     except Exception as ex:
         _log(log, "flet clipboard ERR %r" % ex)
     return False
 
 
-def copy_text_to_clipboard(page, text, prefer_native=True, log=None):
+async def copy_text_to_clipboard_async(page, text, prefer_native=True, log=None):
     native_copiers = (
         _copy_text_with_windows_clipboard,
         _copy_text_with_powershell,
@@ -128,12 +134,18 @@ def copy_text_to_clipboard(page, text, prefer_native=True, log=None):
     )
     if prefer_native:
         for copier in native_copiers:
-            if copier(text, log=log):
+            if await asyncio.to_thread(copier, text, log=log):
                 return True
-    if _copy_text_with_flet(page, text, log=log):
+    if await _copy_text_with_flet(page, text, log=log):
         return True
     if not prefer_native:
         for copier in native_copiers:
-            if copier(text, log=log):
+            if await asyncio.to_thread(copier, text, log=log):
                 return True
     return False
+
+
+def copy_text_to_clipboard(page, text, prefer_native=True, log=None):
+    """Compatibility entry point for synchronous callers outside the UI loop."""
+    return asyncio.run(copy_text_to_clipboard_async(
+        page, text, prefer_native=prefer_native, log=log))

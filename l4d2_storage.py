@@ -6,7 +6,11 @@ import tempfile
 def app_dir():
     base = os.getenv("LOCALAPPDATA") or tempfile.gettempdir()
     path = os.path.join(base, "L4D2ModLoader")
-    os.makedirs(path, exist_ok=True)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        # Keep reads/defaults available; writers still report this failure.
+        pass
     return path
 
 
@@ -70,8 +74,8 @@ def load_json(path, default):
 
 def save_json(path, data):
     try:
-        with open(path, "w", encoding="utf-8") as file:
-            json.dump(data, file, ensure_ascii=False, indent=2)
+        text = json.dumps(data, ensure_ascii=False, indent=2)
+        _atomic_write_text(path, text)
         return True
     except Exception:
         return False

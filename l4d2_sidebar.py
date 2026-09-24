@@ -4,6 +4,7 @@ import flet as ft
 
 import l4d2_core as core
 import l4d2_ui as ui
+from l4d2_app_config import VERSION_LABEL
 from l4d2_controls import fit_image
 from l4d2_theme import (
     ACCENT,
@@ -128,8 +129,8 @@ def build_health_card(snapshot):
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 build_health_row("L4D2", snapshot["game_found"], "No"),
-                build_health_row("Juego", not snapshot["game_running"],
-                                 "Abierto"),
+                build_health_row("Juego", snapshot["game_running"] is False,
+                                 "Desconocido" if snapshot['game_running'] is None else "Abierto"),
                 build_health_row("gameinfo", snapshot["gameinfo_writable"],
                                  "Bloq."),
                 build_health_row("Workshop", snapshot["workshop_exists"],
@@ -191,6 +192,7 @@ def build_sidebar(state, health_snapshot, icon_path, on_play, on_nav,
                         color=TEXT),
                 ft.Text("MOD LOADER", size=11, color=TEXT_DIM,
                         weight=ft.FontWeight.W_600),
+                ft.Text(VERSION_LABEL, size=11, color=TEXT_DIM),
             ],
             spacing=0,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,

@@ -1,5 +1,7 @@
 import unicodedata
 
+from l4d2_app_config import VERSION_LABEL
+
 
 def request_is_current(expected_generation, current_generation, closing=False):
     return not closing and expected_generation == current_generation
@@ -37,6 +39,8 @@ def diagnostic_warnings(snapshot):
         warnings.append("L4D2 no fue detectado.")
     if snapshot.get("game_running"):
         warnings.append("L4D2 esta abierto; cierre el juego antes de modificar addons.")
+    elif snapshot.get('game_running') is None:
+        warnings.append('No se pudo comprobar si L4D2 esta cerrado; las modificaciones requieren verificarlo.')
     if snapshot.get("game_found") and not snapshot.get("workshop_exists"):
         warnings.append("No se detecto la carpeta addons/workshop.")
     if snapshot.get("game_found") and not snapshot.get("gameinfo_exists"):
@@ -55,10 +59,12 @@ def format_diagnostic_report(snapshot):
     warnings = diagnostic_warnings(snapshot)
     lines = [
         "L4D2 Mod Loader - Diagnostico",
+        VERSION_LABEL,
         "",
         "Ruta L4D2: %s" % (snapshot.get("l4d2_path") or "No detectado"),
         "Juego detectado: %s" % _yes_no(snapshot.get("game_found")),
-        "Juego abierto: %s" % _yes_no(snapshot.get("game_running")),
+        "Juego abierto: %s" % ('Desconocido' if snapshot.get('game_running') is None
+                               else _yes_no(snapshot.get('game_running'))),
         "Workshop detectado: %s" % _yes_no(snapshot.get("workshop_exists")),
         "gameinfo.txt existe: %s" % _yes_no(snapshot.get("gameinfo_exists")),
         "gameinfo.txt escribible: %s" % _yes_no(snapshot.get("gameinfo_writable")),

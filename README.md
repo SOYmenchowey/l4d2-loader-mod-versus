@@ -1,5 +1,7 @@
 # L4D2 Mod Loader - Versus
 
+**Version actual: 1.1.** La version aparece en la interfaz y en el reporte de diagnostico copiado para identificar cada entrega.
+
 Herramienta para gestionar addons de **Left 4 Dead 2** sin mover archivos a mano ni editar `gameinfo.txt` manualmente.
 
 Selecciona tus mods para Versus, activa la configuración y pulsa **JUGAR**.
@@ -74,6 +76,8 @@ pyinstaller --clean --noconfirm "L4D2_Mod_Loader.spec"
 ```
 
 El ejecutable generado aparecerá en `dist/`.
+
+La compilación incluye el cliente de escritorio de Flet. Puede descargarlo la primera vez al compilar; el `.exe` distribuido no necesita descargar ese cliente al abrirse. Los metadatos e imágenes de Steam sí pueden requerir Internet.
 
 El repositorio no incluye el `.exe` generado. `dist/`, `build/`, `.flet/`, logs, cachés y archivos `.zip` locales están ignorados por Git.
 

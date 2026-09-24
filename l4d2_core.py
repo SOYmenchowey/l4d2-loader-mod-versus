@@ -1,7 +1,11 @@
-import os, shutil, re, json, hashlib, stat
+import os, shutil, re, json, hashlib, stat, tempfile
 import urllib.request
+from l4d2_locking import locked_installation, resource_lock
+from l4d2_migrations import migrate_legacy_addons
 
 from l4d2_game import (
+    addon_snapshot,
+    GameStatusError,
     find_l4d2,
     fmt_size,
     l4d2_running,
@@ -18,6 +22,7 @@ from l4d2_metadata import (
     resolve_deps,
     save_deps,
     suggest_deps,
+    suggest_dependencies,
 )
 from l4d2_storage import (
     _app_dir,
@@ -69,9 +74,13 @@ def _load_managed_manifest():
     try:
         with open(_managed_manifest_path(), encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
+        if not isinstance(data, dict):
+            raise ValueError('El registro de mods no es un objeto JSON.')
+        return data
+    except FileNotFoundError:
         return {}
+    except (ValueError, OSError) as ex:
+        raise OSError('No se pudo leer el registro de mods; se cancela la operacion.') from ex
 
 
 def _save_managed_manifest(data):
@@ -88,10 +97,12 @@ def _load_restore_manifest():
         with open(_restore_manifest_path(), encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict) or not isinstance(data.get("games"), dict):
-            return {"version": RESTORE_STATE_VERSION, "games": {}}
+            raise ValueError('Registro de restauracion invalido.')
         return data
-    except Exception:
+    except FileNotFoundError:
         return {"version": RESTORE_STATE_VERSION, "games": {}}
+    except (ValueError, OSError) as ex:
+        raise OSError('No se pudo leer el registro de restauracion.') from ex
 
 
 def _save_restore_manifest(data):
@@ -111,56 +122,133 @@ def _restore_state(l4d2):
 
 
 def _save_restore_state(l4d2, entry):
-    data = _load_restore_manifest()
-    key = _l4d2_key(l4d2)
-    useful = {k: v for k, v in entry.items()
-              if k != "game_path" and v not in (None, False, [], {})}
-    if useful:
-        entry = dict(entry)
-        entry["game_path"] = os.path.abspath(l4d2)
-        data["games"][key] = entry
-    else:
-        data["games"].pop(key, None)
-    return _save_restore_manifest(data)
+    with resource_lock(_restore_manifest_path()):
+        data = _load_restore_manifest()
+        key = _l4d2_key(l4d2)
+        useful = {k: v for k, v in entry.items()
+                  if k != "game_path" and v not in (None, False, [], {})}
+        if useful:
+            entry = dict(entry)
+            entry["game_path"] = os.path.abspath(l4d2)
+            data["games"][key] = entry
+        else:
+            data["games"].pop(key, None)
+        return _save_restore_manifest(data)
+
+
+def _plain_path(path):
+    """Reject junctions and symbolic links at the managed boundary."""
+    if not os.path.lexists(path):
+        return True
+    info = os.lstat(path)
+    return not (stat.S_ISLNK(info.st_mode) or
+                getattr(info, 'st_file_attributes', 0) & 0x400)
+
+
+def _mod_dir(l4d2, addon_id):
+    if not _valid_addon_id(addon_id):
+        raise ValueError('ID de addon invalido: ' + str(addon_id))
+    root = os.path.join(l4d2, 'mods')
+    path = os.path.join(root, addon_id)
+    if not _plain_path(root) or not _plain_path(path):
+        raise OSError('La carpeta de mods contiene un enlace; se conserva.')
+    return path
+
+
+def _marker_record(l4d2, addon_id):
+    marker = os.path.join(_mod_dir(l4d2, addon_id), MANAGED_MARKER)
+    if not _plain_path(marker):
+        raise OSError('Marca de propiedad enlazada; se cancela la operacion.')
+    try:
+        with open(marker, encoding='utf-8') as file:
+            text = file.read(16385)
+    except FileNotFoundError:
+        return None
+    if len(text) > 16384:
+        return None
+    if text.strip() == addon_id:
+        return {}  # Old markers establish ownership, but not payload integrity.
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(data, dict) and data.get('id') == addon_id and data.get('version') == 2:
+        return data
+    return None
+
+
+def _managed_records(l4d2, data=None):
+    if data is None:
+        data = _load_managed_manifest()
+    raw = data.get(_l4d2_key(l4d2), {})
+    if isinstance(raw, list):
+        raw = {aid: {} for aid in raw if isinstance(aid, str)}
+    if not isinstance(raw, dict):
+        raise OSError('Registro de instalacion invalido.')
+    records = {}
+    root = os.path.join(l4d2, 'mods')
+    if not _plain_path(root):
+        raise OSError('La carpeta mods es un enlace; se conserva.')
+    names = set(raw)
+    if os.path.isdir(root):
+        names.update(os.listdir(root))
+    for aid in names:
+        if not _valid_addon_id(aid):
+            continue
+        path = _mod_dir(l4d2, aid)
+        if not os.path.lexists(path):
+            if aid in raw:
+                records[aid] = raw[aid] if isinstance(raw[aid], dict) else {}
+            continue
+        if not os.path.isdir(path):
+            if aid in raw:
+                records[aid] = {'_unverified': True}
+            continue
+        record = _marker_record(l4d2, aid)
+        if record is not None:
+            records[aid] = record
+        elif aid in raw:
+            record = dict(raw[aid]) if isinstance(raw[aid], dict) else {}
+            record['_unverified'] = True
+            records[aid] = record
+    return records
 
 
 def _managed_ids(l4d2):
-    data = _load_managed_manifest()
-    raw = data.get(_l4d2_key(l4d2), [])
-    ids = set(str(x) for x in raw if _valid_addon_id(str(x)))
-    mods = os.path.join(l4d2, "mods")
-    if os.path.isdir(mods):
-        for name in os.listdir(mods):
-            d = os.path.join(mods, name)
-            if (os.path.isdir(d) and _valid_addon_id(name)
-                    and os.path.isfile(os.path.join(d, MANAGED_MARKER))):
-                ids.add(name)
-    return ids
+    return set(_managed_records(l4d2))
 
 
 def _register_managed(l4d2, addon_ids):
-    data = _load_managed_manifest()
-    key = _l4d2_key(l4d2)
-    ids = set(str(x) for x in data.get(key, []) if _valid_addon_id(str(x)))
-    ids.update(str(x) for x in addon_ids if _valid_addon_id(str(x)))
-    data[key] = sorted(ids)
-    _save_managed_manifest(data)
+    with resource_lock(_managed_manifest_path()):
+        data = _load_managed_manifest()
+        records = _managed_records(l4d2, data)
+        for aid in addon_ids:
+            if _valid_addon_id(aid):
+                records[aid] = _marker_record(l4d2, aid) or {}
+        data[_l4d2_key(l4d2)] = records
+        return _save_managed_manifest(data)
 
 
 def _unregister_managed(l4d2, addon_ids):
-    data = _load_managed_manifest()
-    key = _l4d2_key(l4d2)
-    ids = set(str(x) for x in data.get(key, []) if _valid_addon_id(str(x)))
-    ids.difference_update(str(x) for x in addon_ids)
-    if ids:
-        data[key] = sorted(ids)
-    else:
-        data.pop(key, None)
-    _save_managed_manifest(data)
+    with resource_lock(_managed_manifest_path()):
+        data = _load_managed_manifest()
+        key = _l4d2_key(l4d2)
+        raw = data.get(key, {})
+        records = dict(raw) if isinstance(raw, dict) else {aid: {} for aid in raw}
+        for aid in addon_ids:
+            records.pop(aid, None)
+        if records:
+            data[key] = records
+        else:
+            data.pop(key, None)
+        return _save_managed_manifest(data)
 
 
 def _valid_addon_id(addon_id):
-    return bool(re.match(r"^[A-Za-z0-9_.-]+$", addon_id or ""))
+    return (isinstance(addon_id, str) and len(addon_id) <= 128
+            and bool(re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*', addon_id))
+            and not addon_id.endswith('.')
+            and not re.fullmatch(r'(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', addon_id, re.I))
 
 
 def _ensure_gameinfo_backup(l4d2, gameinfo, log=print):
@@ -199,14 +287,17 @@ def _ensure_gameinfo_backup(l4d2, gameinfo, log=print):
 
 
 def _strip_managed_gameinfo(data, addon_ids):
-    ids = set(addon_ids)
+    records = addon_ids if isinstance(addon_ids, dict) else {aid: {} for aid in addon_ids}
+    ids = set(records)
     if not ids:
         return data
     kept = []
     for line in data.splitlines(keepends=True):
         decoded = line.decode("utf-8", "ignore").strip()
-        match = re.match(r"Game\s+mods\\([^\s\r\n]+)", decoded)
-        if not match or match.group(1) not in ids:
+        match = re.match(r'Game\s+mods\\([^\s\r\n]+)', decoded)
+        aid = match.group(1) if match else None
+        if (aid not in ids or
+                (records[aid].get('tagged_entry') and '// L4D2ModLoader' not in decoded)):
             kept.append(line)
     return b"".join(kept)
 
@@ -216,7 +307,7 @@ def _normalized_newlines(data):
 
 
 def _read_text(path, encoding="utf-8"):
-    with open(path, encoding=encoding, errors="ignore") as f:
+    with open(path, encoding=encoding, errors="surrogateescape", newline='') as f:
         return f.read()
 
 
@@ -240,24 +331,64 @@ def _find_searchpaths_anchor(lines):
     return None
 
 
-def _remove_managed_mod_dir(l4d2, addon_id, log=print):
+def _file_hash(path):
+    with open(path, 'rb') as file:
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: file.read(1024 * 1024), b''):
+            digest.update(chunk)
+        return digest.hexdigest()
+
+
+def _remove_managed_mod_dir(l4d2, addon_id, log=print, record=None, unregister=True):
     if not _valid_addon_id(addon_id):
         log("[!] ID invalido, no se borra carpeta mods: " + str(addon_id))
         return False
-    d = os.path.join(l4d2, "mods", addon_id)
+    d = _mod_dir(l4d2, addon_id)
     if not os.path.isdir(d):
-        _unregister_managed(l4d2, [addon_id])
-        return True
+        return _unregister_managed(l4d2, [addon_id]) if unregister else True
     marker = os.path.join(d, MANAGED_MARKER)
-    if addon_id not in _managed_ids(l4d2) and not os.path.isfile(marker):
+    if record is None:
+        record = _marker_record(l4d2, addon_id)
+    if record is None or record.get('_unverified'):
         log("[!] Carpeta mods\\%s no fue creada por el loader; se conserva." % addon_id)
         return False
+    marker_removed = False
     try:
-        shutil.rmtree(d)
-        _unregister_managed(l4d2, [addon_id])
-        log("[*] Carpeta mods\\" + addon_id + " eliminada.")
+        with open(marker, 'rb') as file:
+            original_marker = file.read(16385)
+        payload = os.path.join(d, 'pak01_dir.vpk')
+        expected = record.get('sha256')
+        if os.path.exists(payload):
+            if expected and _plain_path(payload) and _file_hash(payload) == expected:
+                if not os.stat(payload).st_mode & stat.S_IWRITE:
+                    os.chmod(payload, stat.S_IREAD | stat.S_IWRITE)
+                os.remove(payload)
+            else:
+                log('[!] Se conserva el VPK sin integridad verificable o modificado: ' + payload)
+                return False
+        os.remove(marker)
+        marker_removed = True
+        if not os.listdir(d):
+            os.rmdir(d)
+        else:
+            log('[*] Se conservan archivos externos en mods\\' + addon_id)
+        if unregister and not _unregister_managed(l4d2, [addon_id]):
+            return False
         return True
     except OSError as ex:
+        if marker_removed and os.path.isdir(d):
+            try:
+                # A locked directory may survive after its contents were removed.
+                # Restore the proof of ownership so cleanup can retry later.
+                _mod_dir(l4d2, addon_id)
+                with open(marker, 'xb') as file:
+                    file.write(original_marker)
+                    file.flush()
+                    os.fsync(file.fileno())
+            except FileExistsError:
+                pass
+            except OSError as recovery_error:
+                log('[!] No se pudo recuperar la marca de mods\\%s: %s' % (addon_id, recovery_error))
         log("[!] No se pudo borrar mods\\%s: %s" % (addon_id, ex))
         return False
 
@@ -270,17 +401,42 @@ def currently_enabled(l4d2):
     return re.findall(r'Game\s+mods\\([^\s\r\n]+)', txt)
 
 
-def currently_enabled_orphans(l4d2):
-    wp = os.path.join(l4d2, "left4dead2", "addons", "workshop")
-    enabled = currently_enabled(l4d2)
+def currently_enabled_orphans(l4d2, records=None):
+    records = _managed_records(l4d2) if records is None else records
     orphans = []
-    for aid in enabled:
-        vpk = os.path.join(wp, aid + ".vpk")
-        if not os.path.isfile(vpk):
+    for aid, record in records.items():
+        if record.get('_unverified'):
+            continue
+        source = record.get('source')
+        if not source:
+            # Unknown legacy sources cannot safely be declared deleted.
+            continue
+        try:
+            os.stat(source)
+        except FileNotFoundError:
             orphans.append(aid)
     return orphans
 
 
+def _remove_managed_batch(l4d2, ids, records, log):
+    removed = []
+    failed = []
+    referenced = {aid.casefold() for aid in currently_enabled(l4d2)}
+    for aid in ids:
+        if aid.casefold() in referenced:
+            log('[!] Se conserva mods\\%s: sigue referenciado fuera de las entradas del loader.' % aid)
+            failed.append(aid)
+            continue
+        if _remove_managed_mod_dir(l4d2, aid, log, records[aid], unregister=False):
+            removed.append(aid)
+        else:
+            failed.append(aid)
+    if removed and not _unregister_managed(l4d2, removed):
+        raise OSError('No se pudo guardar el registro tras retirar los mods.')
+    return removed, failed
+
+
+@locked_installation
 def cleanup_orphans(l4d2, log=print):
     gi = os.path.join(l4d2, "left4dead2", "gameinfo.txt")
     if not os.path.isfile(gi):
@@ -288,40 +444,41 @@ def cleanup_orphans(l4d2, log=print):
     if l4d2_running():
         log("[!] Left 4 Dead 2 esta abierto. Cierra el juego antes de limpiar.")
         return []
-    orphans = currently_enabled_orphans(l4d2)
+    records = _managed_records(l4d2)
+    orphans = currently_enabled_orphans(l4d2, records)
     if not orphans:
         return []
-    idset = set(orphans)
     _ensure_writable(gi, log)
-    lines = _read_text(gi).split("\n")
-    removed = []
-    keep = []
-    for l in lines:
-        m = re.match(r"Game\s+mods\\([^\s\r\n]+)", l.strip())
-        if m and m.group(1) in idset:
-            removed.append(m.group(1))
-        else:
-            keep.append(l)
-    if not removed:
-        return []
     try:
-        _atomic_write_text(gi, "\n".join(keep))
+        with open(gi, 'rb') as file:
+            current = file.read()
+        cleaned = _strip_managed_gameinfo(current, {aid: records[aid] for aid in orphans})
+        if cleaned != current:
+            _atomic_write_bytes(gi, cleaned)
     except OSError as ex:
         log("[!] No se pudo escribir gameinfo.txt: %s" % ex)
         return []
-    for rid in removed:
-        _remove_managed_mod_dir(l4d2, rid, log)
+    removed, failed = _remove_managed_batch(l4d2, orphans, records, log)
+    if failed:
+        log('[!] Limpieza parcial; no se pudieron retirar: ' + ', '.join(failed))
     log("[OK] Addons huérfanos limpiados: " + ", ".join(removed))
     return removed
 
 
+@locked_installation
 def restore(l4d2, log=print):
     if l4d2_running():
         log("[!] Left 4 Dead 2 esta abierto. Cierra el juego antes de restaurar.")
         return False
 
+    if migrate_legacy_addons(l4d2, log):
+        return False
     gi = os.path.join(l4d2, "left4dead2", "gameinfo.txt")
-    managed = sorted(_managed_ids(l4d2))
+    records = _managed_records(l4d2)
+    managed = sorted(records)
+    if any(record.get('_unverified') for record in records.values()):
+        log('[!] Falta una marca de propiedad registrada; se conservan archivos y backups para recuperacion.')
+        return False
     entry = _restore_state(l4d2)
     safe_backup = _gameinfo_backup_path(l4d2)
     backup_data = None
@@ -368,7 +525,7 @@ def restore(l4d2, log=print):
         try:
             with open(gi, "rb") as f:
                 current_data = f.read()
-            without_loader = _strip_managed_gameinfo(current_data, managed)
+            without_loader = _strip_managed_gameinfo(current_data, records)
             if (backup_data is not None and
                     _normalized_newlines(without_loader) ==
                     _normalized_newlines(backup_data)):
@@ -403,13 +560,10 @@ def restore(l4d2, log=print):
         log("[!] Error restaurando glows del loader: %s" % ex)
         return False
 
-    removed = []
-    for addon_id in managed:
-        if _remove_managed_mod_dir(l4d2, addon_id, log):
-            removed.append(addon_id)
-        else:
-            log("[!] La restauracion quedo incompleta.")
-            return False
+    removed, failed = _remove_managed_batch(l4d2, managed, records, log)
+    if failed:
+        log('[!] La restauracion quedo incompleta: ' + ', '.join(failed))
+        return False
     if removed:
         log("[*] Carpetas gestionadas por el loader eliminadas: " + ", ".join(removed))
     else:
@@ -455,6 +609,48 @@ def _ensure_writable(path, log=print):
         log("[!] No se pudo quitar el atributo de solo lectura: %s" % ex)
 
 
+def _verified_copy(source, destination, expected_hash=None):
+    if not _plain_path(destination):
+        raise OSError('El destino VPK es un enlace; se conserva.')
+    before = os.stat(source)
+    digest = _file_hash(source)
+    if (os.path.isfile(destination) and os.path.getsize(destination) == before.st_size
+            and _file_hash(destination) == digest):
+        after = os.stat(source)
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise OSError('El addon cambio durante la verificacion; vuelve a intentarlo.')
+        return digest, before.st_size
+    fd, temporary = tempfile.mkstemp(prefix='pak01.', suffix='.tmp', dir=os.path.dirname(destination))
+    os.close(fd)
+    try:
+        shutil.copyfile(source, temporary)
+        with open(temporary, 'r+b') as file:
+            file.flush()
+            os.fsync(file.fileno())
+        after = os.stat(source)
+        if ((before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+                or os.path.getsize(temporary) != before.st_size or _file_hash(temporary) != digest):
+            raise OSError('Copia incompleta o fuente modificada; no se activa el addon.')
+        original_mode = None
+        if os.path.isfile(destination) and not os.stat(destination).st_mode & stat.S_IWRITE:
+            if not expected_hash or _file_hash(destination) != expected_hash:
+                raise OSError('El destino de solo lectura no tiene integridad verificable; se conserva.')
+            original_mode = os.stat(destination).st_mode
+            os.chmod(destination, stat.S_IREAD | stat.S_IWRITE)
+        try:
+            os.replace(temporary, destination)
+        except OSError:
+            if original_mode is not None:
+                os.chmod(destination, original_mode)
+            raise
+    finally:
+        if os.path.exists(temporary):
+            os.chmod(temporary, stat.S_IREAD | stat.S_IWRITE)
+            os.remove(temporary)
+    return digest, before.st_size
+
+
+@locked_installation
 def enable(l4d2, selected, log=print):
     gi = os.path.join(l4d2, "left4dead2", "gameinfo.txt")
     if not os.path.isfile(gi):
@@ -465,16 +661,34 @@ def enable(l4d2, selected, log=print):
         return False
     _ensure_writable(gi, log)
 
-    text = _read_text(gi)
-    lines = text.split("\n")
-    already = set(re.findall(r"Game\s+mods\\([^\s\r\n]+)", text))
+    with open(gi, 'rb') as file:
+        original = file.read()
+    text = original.decode('utf-8', 'surrogateescape')
+    lines = text.splitlines(keepends=True)
+    already = {aid.casefold() for aid in re.findall(r"Game\s+mods\\([^\s\r\n]+)", text)}
     anchor = _find_searchpaths_anchor(lines)
     if anchor is None:
         log("[!] No se encontro SearchPaths en gameinfo.txt")
         return False
 
-    candidates = [v for v in selected
-                  if _valid_addon_id(v.get("id")) and v["id"] not in already]
+    candidates, seen = [], set()
+    for addon in selected:
+        aid = addon.get('id')
+        if not _valid_addon_id(aid) or aid.casefold() in seen:
+            log('[!] ID invalido o repetido: ' + str(aid))
+            return False
+        seen.add(aid.casefold())
+        path = _mod_dir(l4d2, aid)
+        if os.path.lexists(path) and _marker_record(l4d2, aid) is None:
+            log('[!] Carpeta ajena al loader; no se modifica: ' + path)
+            return False
+        if aid.casefold() in already and not os.path.isdir(path):
+            log('[!] La ruta activa no pertenece al loader: ' + aid)
+            return False
+        if not os.path.isfile(addon.get('path', '')):
+            log('[!] No se encontro la fuente del addon: ' + aid)
+            return False
+        candidates.append(addon)
     if not candidates:
         log("[!] Todos los addons indicados ya estaban activos o tienen ID invalido.")
         return True
@@ -485,29 +699,38 @@ def enable(l4d2, selected, log=print):
     os.makedirs(mods_root, exist_ok=True)
 
     inserted = []
-    for v in candidates:
-        d = os.path.join(mods_root, v["id"])
-        os.makedirs(d, exist_ok=True)
-        dst = os.path.join(d, "pak01_dir.vpk")
-        if not os.path.isfile(dst):
-            shutil.copy(v["path"], dst)
-        with open(os.path.join(d, MANAGED_MARKER), "w", encoding="utf-8") as f:
-            f.write(v["id"] + "\n")
-        lines.insert(anchor, "Game\t\t\tmods\\" + v["id"])
-        anchor += 1
-        already.add(v["id"])
-        inserted.append(v["id"])
-
     try:
-        new_text = "\n".join(lines)
+        newline = '\r\n' if b'\r\n' in original else '\n'
+        for v in candidates:
+            d = _mod_dir(l4d2, v['id'])
+            record = _marker_record(l4d2, v['id']) or {}
+            source = os.path.realpath(os.path.abspath(v['path']))
+            if record.get('source') and os.path.normcase(record['source']) != os.path.normcase(source):
+                raise OSError('El ID ya pertenece a otra fuente: ' + v['id'])
+            if not os.path.exists(d):
+                os.mkdir(d)
+                record = {'version': 2, 'id': v['id'], 'source': source, 'tagged_entry': True}
+                _atomic_write_text(os.path.join(d, MANAGED_MARKER), json.dumps(record))
+            digest, size = _verified_copy(source, os.path.join(d, 'pak01_dir.vpk'), record.get('sha256'))
+            record.update(version=2, id=v['id'], source=source, sha256=digest, size=size)
+            if v['id'].casefold() not in already:
+                record['tagged_entry'] = True
+                lines.insert(anchor, 'Game\t\t\tmods\\' + v['id'] + ' // L4D2ModLoader' + newline)
+                anchor += 1
+            _atomic_write_text(os.path.join(d, MANAGED_MARKER), json.dumps(record))
+            inserted.append(v['id'])
+        # Ownership must be durable before gameinfo can reference these copies.
+        if not _register_managed(l4d2, inserted):
+            log('[!] No se pudo registrar la propiedad de los mods; no se activan.')
+            return False
+        new_text = ''.join(lines)
         if _find_searchpaths_anchor(new_text.split("\n")) is None:
             log("[!] gameinfo.txt resultante no parece valido; no se escribe.")
             return False
-        _atomic_write_text(gi, new_text)
+        _atomic_write_bytes(gi, new_text.encode('utf-8', 'surrogateescape'))
     except OSError as ex:
         log("[!] No se pudo escribir gameinfo.txt: %s" % ex)
         return False
-    _register_managed(l4d2, inserted)
     log("[OK] Mods habilitados en gameinfo.txt: " + ", ".join(inserted))
     log("[*] Los addons ya activos se mantuvieron intactos.")
     log("[*] Carpeta mods/ ubicada en: " + mods_root)
@@ -515,6 +738,7 @@ def enable(l4d2, selected, log=print):
     return True
 
 
+@locked_installation
 def disable(l4d2, ids, log=print):
     gi = os.path.join(l4d2, "left4dead2", "gameinfo.txt")
     if not os.path.isfile(gi):
@@ -525,27 +749,31 @@ def disable(l4d2, ids, log=print):
     if l4d2_running():
         log("[!] Left 4 Dead 2 esta abierto. Cierra el juego antes de quitar addons.")
         return False
+    if set(migrate_legacy_addons(l4d2, log)) & set(ids):
+        return False
     _ensure_writable(gi, log)
-    idset = set(ids)
-    lines = _read_text(gi).split("\n")
-    removed = []
-    keep = []
-    for l in lines:
-        m = re.match(r"Game\s+mods\\([^\s\r\n]+)", l.strip())
-        if m and m.group(1) in idset:
-            removed.append(m.group(1))
-        else:
-            keep.append(l)
+    records = _managed_records(l4d2)
+    idset = set(ids) & set(records)
+    if any(records[aid].get('_unverified') for aid in idset):
+        log('[!] No se pudo verificar la propiedad de todos los mods; se conservan los archivos.')
+        return False
+    removed = sorted(idset)
     if not removed:
         log("[!] Ninguno de los IDs figura activo en gameinfo.txt.")
         return False
     try:
-        _atomic_write_text(gi, "\n".join(keep))
+        with open(gi, 'rb') as file:
+            original = file.read()
+        updated = _strip_managed_gameinfo(original, {aid: records[aid] for aid in removed})
+        if updated != original:
+            _atomic_write_bytes(gi, updated)
     except OSError as ex:
         log("[!] No se pudo escribir gameinfo.txt: %s" % ex)
         return False
-    for rid in removed:
-        _remove_managed_mod_dir(l4d2, rid, log)
+    removed, failed = _remove_managed_batch(l4d2, removed, records, log)
+    if failed:
+        log('[!] No se pudieron retirar todas las copias: ' + ', '.join(failed))
+        return False
     log("[OK] Addons deshabilitados de gameinfo.txt: " + ", ".join(removed))
     return True
 
@@ -576,6 +804,7 @@ def vision_state(l4d2):
     return "partial"
 
 
+@locked_installation
 def disable_infected_vision(l4d2, log=print):
     if l4d2_running():
         log("[!] Left 4 Dead 2 esta abierto. Cierra el juego antes de tocar la vision.")
@@ -609,10 +838,12 @@ def disable_infected_vision(l4d2, log=print):
     if not moved:
         log("[!] Ningun archivo de vision por renombrar (ya estan quitados?).")
         return False
-    log("[OK] Vision de infectado quitada: " + ", ".join(moved))
-    return True
+    complete = len(moved) == len(candidates)
+    log(("[OK]" if complete else "[!] Cambio parcial:") + " Vision de infectado quitada: " + ", ".join(moved))
+    return complete
 
 
+@locked_installation
 def restore_infected_vision(l4d2, log=print):
     if l4d2_running():
         log("[!] Left 4 Dead 2 esta abierto. Cierra el juego antes de tocar la vision.")
@@ -665,6 +896,9 @@ def restore_infected_vision(l4d2, log=print):
         entry.pop("vision_files", None)
     if not _save_restore_state(l4d2, entry):
         log("[!] No se pudo actualizar el registro de vision.")
+        return False
+    if remaining:
+        log('[!] Restauracion de vision parcial; quedan archivos pendientes: ' + ', '.join(remaining))
         return False
     if not restored and completed:
         log("[*] La vision ya estaba en su estado original.")

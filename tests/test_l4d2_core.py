@@ -201,9 +201,9 @@ class CoreFileFlowTests(unittest.TestCase):
 
         removed = core.cleanup_orphans(self.l4d2, log=lambda msg: None)
 
-        self.assertEqual(removed, ["missing"])
+        self.assertEqual(removed, [])
         self.assertTrue(os.path.isdir(unmanaged))
-        self.assertNotIn("mods\\missing", self.read_gameinfo())
+        self.assertIn("mods\\missing", self.read_gameinfo())
 
     def test_orphan_waits_until_game_closes_before_cleanup(self):
         addon = self.write_vpk("12345")
@@ -236,7 +236,7 @@ class CoreFileFlowTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, traceback):
                 return False
 
-            def read(self):
+            def read(self, size=-1):
                 return b"preview-bytes"
 
         url = "https://example.invalid/preview.jpg?version=1"

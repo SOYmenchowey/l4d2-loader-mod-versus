@@ -1,8 +1,9 @@
 import json
 import os
 import re
+from collections import deque
 
-from l4d2_storage import app_dir
+from l4d2_storage import app_dir, save_json
 
 
 CATEGORY_KEYWORDS = {
@@ -45,29 +46,54 @@ def load_deps():
 
 
 def save_deps(deps):
-    try:
-        with open(deps_path(), "w", encoding="utf-8") as file:
-            json.dump(deps, file, indent=2)
-        return True
-    except Exception:
-        return False
+    return save_json(deps_path(), deps)
 
 
 _REQUIRES_RE = re.compile(
     r"(?:requires|required|need|needs|must have|"
     r"depend(?:s|ent)? on)"
-    r"[^.\n]{4,300}", re.IGNORECASE)
+    r"[^\n]{4,300}", re.IGNORECASE)
 
 
 def _norm_text(value):
     return re.sub(r"[^a-z0-9 ]", " ", (value or "").lower())
 
 
-def suggest_deps(description, addon_ids, titles=None):
+class DependencyIndex:
+    def __init__(self, addon_ids, titles):
+        self.ids = set(addon_ids)
+        self.trie = {}
+        self.order = {}
+        for aid, title in titles.items():
+            if aid not in self.ids:
+                continue
+            words = _norm_text(title).split()
+            if not words:
+                continue
+            self.order[aid] = len(self.order)
+            node = self.trie
+            for word in words:
+                node = node.setdefault(word, {})
+            node.setdefault(None, []).append(aid)
+
+    def matches(self, segment):
+        words = _norm_text(segment).split()
+        found = set()
+        for start in range(len(words)):
+            node = self.trie
+            for end in range(start, len(words)):
+                node = node.get(words[end])
+                if node is None:
+                    break
+                found.update(node.get(None, ()))
+        return sorted(found, key=self.order.__getitem__)
+
+
+def suggest_deps(description, addon_ids, titles=None, index=None):
     if not description:
         return []
-    addon_ids = set(addon_ids)
-    titles = titles or {}
+    index = index or DependencyIndex(addon_ids, titles or {})
+    addon_ids = index.ids
     found = {}
     segments = [match.group(0) for match in _REQUIRES_RE.finditer(description)]
     for segment in segments:
@@ -75,27 +101,9 @@ def suggest_deps(description, addon_ids, titles=None):
             workshop_id = match.group(1)
             if workshop_id in addon_ids and workshop_id not in found:
                 found[workshop_id] = "link"
-    title_items = [
-        (workshop_id, title)
-        for workshop_id, title in titles.items()
-        if workshop_id in addon_ids
-    ]
-    scored = {}
     for segment in segments:
-        segment_norm = " ".join(_norm_text(segment).split())
-        if not segment_norm:
-            continue
-        for workshop_id, title in title_items:
-            if workshop_id in found:
-                continue
-            normalized_title = _norm_text(title).strip()
-            if not normalized_title:
-                continue
-            pattern = r"(?:^|\s)" + re.escape(normalized_title) + r"(?:$|\s)"
-            if re.search(pattern, segment_norm):
-                scored[workshop_id] = max(scored.get(workshop_id, 0.0), 1.0)
-    for workshop_id in sorted(scored, key=scored.get, reverse=True):
-        found.setdefault(workshop_id, "texto")
+        for workshop_id in index.matches(segment):
+            found.setdefault(workshop_id, 'texto')
     return [
         {"id": workshop_id, "via": via}
         for workshop_id, via in sorted(found.items(),
@@ -103,10 +111,22 @@ def suggest_deps(description, addon_ids, titles=None):
     ]
 
 
+def suggest_dependencies(addons):
+    ids = {addon['id'] for addon in addons}
+    titles = {addon['id']: addon.get('title') or addon['id'] for addon in addons}
+    index = DependencyIndex(ids, titles)
+    return {
+        addon['id']: [entry['id'] for entry in suggest_deps(
+            addon.get('description_raw') or addon.get('description') or '', ids, index=index)
+            if entry['id'] != addon['id']]
+        for addon in addons
+    }
+
+
 def resolve_deps(ids, deps):
-    out, seen, queue = [], set(), list(ids)
+    out, seen, queue = [], set(), deque(ids)
     while queue:
-        addon_id = queue.pop(0)
+        addon_id = queue.popleft()
         if addon_id in seen:
             continue
         seen.add(addon_id)

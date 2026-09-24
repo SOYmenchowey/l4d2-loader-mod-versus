@@ -55,7 +55,10 @@ class GamePathTests(unittest.TestCase):
         ids = {addon["id"] for addon in addons}
 
         self.assertIn("12345", ids)
-        self.assertIn("my_local_mod", ids)
+        local = next(addon for addon in addons if addon['path'] == root_vpk)
+        self.assertTrue(local['id'].startswith('local_my_local_mod_'))
+        self.assertEqual(local['source_kind'], 'local')
+        self.assertEqual(len(ids), 2)
 
 
 if __name__ == "__main__":

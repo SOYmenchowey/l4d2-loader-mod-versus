@@ -1,5 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from importlib.metadata import version
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_data_files
+from flet_desktop import ensure_client_cached
+
+if version('flet') != version('flet-desktop'):
+    raise RuntimeError('flet and flet-desktop must have matching versions.')
+
+# Resolve the official client at build time, never on the user's first launch.
+desktop_dir = ensure_client_cached() / 'flet'
+for required in ('flet.exe', 'flutter_windows.dll', 'data/app.so', 'data/icudtl.dat'):
+    if not (desktop_dir / required).is_file():
+        raise RuntimeError('Incomplete Flet desktop runtime: ' + str(desktop_dir / required))
+
+flet_data = [(str(desktop_dir), 'flet_desktop/app/flet')]
+flet_data += collect_data_files('flet.controls.material', includes=['icons.json'])
+flet_data += collect_data_files('flet.controls.cupertino', includes=['cupertino_icons.json'])
 
 a = Analysis(
     ['main.py'],
@@ -37,11 +55,11 @@ a = Analysis(
         ('assets/glows/objects/GLOW ITEMS SIN MESA.png',
          'assets/glows/objects'),
         ('l4d2_core.py', '.'),
-    ],
-    hiddenimports=[],
+    ] + flet_data,
+    hiddenimports=['flet_desktop'],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(Path(SPECPATH) / 'packaging_hooks' / 'pyi_rth_flet_desktop.py')],
     excludes=[],
     noarchive=False,
     optimize=0,

@@ -1,6 +1,10 @@
 import os
 import re
 import sys
+import csv
+import hashlib
+import subprocess
+from l4d2_migrations import apply_aliases
 
 if sys.platform == "win32":
     import winreg
@@ -135,17 +139,20 @@ def find_l4d2(preferred_path=None):
     return None
 
 
-def _safe_addon_id(filename, used):
+def _safe_addon_id(filename, used, source_key=None, workshop=False):
     base = os.path.splitext(filename)[0]
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", base).strip("._-")
-    if not safe:
-        safe = "addon"
-    candidate = safe
-    suffix = 2
-    while candidate in used:
-        candidate = "%s_%d" % (safe, suffix)
-        suffix += 1
-    used.add(candidate)
+    if workshop and re.fullmatch(r'[0-9]+', base):
+        candidate = base
+    else:
+        # The identity depends on its source, never on directory enumeration
+        # order or which other addons happen to be installed this time.
+        canonical = (source_key or filename).replace('\\', '/').lower()
+        digest = hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:24]
+        safe = re.sub(r'[^a-z0-9_.-]+', '_', base.lower()).strip('._-')[:48] or 'addon'
+        candidate = 'local_' + safe + '_' + digest
+    if candidate.casefold() in used:
+        raise ValueError('Dos fuentes comparten la misma identidad de addon: ' + filename)
+    used.add(candidate.casefold())
     return candidate
 
 
@@ -161,28 +168,31 @@ def list_addons(l4d2):
     for folder in scan_dirs:
         if not os.path.isdir(folder):
             continue
-        for filename in sorted(os.listdir(folder)):
+        for filename in sorted(os.listdir(folder), key=str.casefold):
             if filename.lower().endswith(".vpk"):
                 path = os.path.join(folder, filename)
                 if not os.path.isfile(path):
                     continue
-                normalized_path = os.path.normcase(os.path.abspath(path))
+                normalized_path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
                 if normalized_path in seen_paths:
                     continue
                 seen_paths.add(normalized_path)
-                ctime = 0.0
                 try:
-                    ctime = os.path.getctime(path)
-                except OSError:
-                    pass
-                addon_id = _safe_addon_id(filename, used_ids)
+                    info = os.stat(path)
+                except FileNotFoundError:
+                    continue  # Steam can finish/remove a download mid-scan.
+                is_workshop = folder != addons_path
+                addon_id = _safe_addon_id(
+                    filename, used_ids, os.path.relpath(path, addons_path), is_workshop)
                 out.append({
                     "id": addon_id,
                     "path": path,
-                    "size": os.path.getsize(path),
-                    "ctime": ctime,
+                    "size": info.st_size,
+                    "ctime": info.st_ctime,
+                    "mtime_ns": info.st_mtime_ns,
+                    "source_kind": 'workshop' if is_workshop else 'local',
                 })
-    return out
+    return apply_aliases(l4d2, out)
 
 
 def fmt_size(value):
@@ -191,14 +201,27 @@ def fmt_size(value):
     return "%.1f KB" % (value / 1024)
 
 
+def addon_snapshot(addons):
+    return frozenset((addon['id'], os.path.normcase(os.path.abspath(addon['path'])),
+                      addon['size'], addon.get('mtime_ns', 0)) for addon in addons)
+
+
+class GameStatusError(OSError):
+    """The process check could not prove that mutating game files is safe."""
+
+
 def l4d2_running():
     try:
-        import subprocess
         output = subprocess.check_output(
             ["tasklist", "/FO", "CSV", "/NH"],
             stderr=subprocess.DEVNULL,
             creationflags=0x08000000,
-        ).decode("utf-8", "ignore").lower()
-    except Exception:
-        return False
-    return "left4dead2.exe" in output or "hl2.exe" in output
+            timeout=3,
+        ).decode('utf-8', 'replace')
+        rows = list(csv.reader(output.splitlines()))
+        names = {row[0].casefold() for row in rows if len(row) >= 2}
+        if not names:
+            raise ValueError('Respuesta vacia o invalida de tasklist')
+    except (OSError, ValueError, subprocess.SubprocessError) as ex:
+        raise GameStatusError('No se pudo comprobar si L4D2 esta cerrado; no se modifican archivos.') from ex
+    return bool(names & {'left4dead2.exe', 'hl2.exe'})
